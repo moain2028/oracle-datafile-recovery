@@ -6,8 +6,8 @@
 //!   approximation. Floats are never used for NUMBER.
 //! * Decoders are pure, allocation-light and never panic (fuzzed).
 //!
-//! Internal type codes (OCI, \[O2\]): 1 `VARCHAR2`/`NVARCHAR2`, 2 `NUMBER`, 12 `DATE`,
-//! 23 `RAW`, 69 `ROWID`, 96 `CHAR`/`NCHAR`, 100 `BINARY_FLOAT`, 101 `BINARY_DOUBLE`,
+//! Internal type codes (OCI, \[O2\]): 1 `VARCHAR2`/`NVARCHAR2`, 2 `NUMBER`, 8 `LONG`,
+//! 12 `DATE`, 23 `RAW`, 24 `LONG RAW`, 69 `ROWID`, 96 `CHAR`/`NCHAR`, 100 `BINARY_FLOAT`, 101 `BINARY_DOUBLE`,
 //! 112 CLOB/NCLOB, 113 BLOB, 180 TIMESTAMP, 181 TIMESTAMP WITH TIME ZONE,
 //! 182 INTERVAL YEAR TO MONTH, 183 INTERVAL DAY TO SECOND,
 //! 231 TIMESTAMP WITH LOCAL TIME ZONE.

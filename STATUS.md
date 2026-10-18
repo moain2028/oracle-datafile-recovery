@@ -4,7 +4,7 @@ updated: 2026-10-15
 # الحالة الآن
 ## قيد العمل (سطر لكل وكيل — حدّثه بنفسك)
 - **Lead (2026-10-15، تسليم):** دُمج: مختبر `lab/` + `odr-corrupt` + REQ-004 + وثائق التسليم. **محجوب:** المختبر يحتاج جهاز المالك (Windows+Docker) أو VPS. الوكيل التالي يبدأ من `docs/handover/NEXT_AGENT_PROMPT.md`. PR #10 (Astra) = طلب تعديلات B1–B4. Issue #8 = تفعيل CI من المالك.
-- Lead — L-1..L-4b ✅ · مراجعة S1a (#10: تعديلات مطلوبة) · L-6a bootstrap$ ✅ · التالي L-6b: كتل bootstrap$ من kcvfhrdb + OBJ$/TAB$/COL$ — `lead/dictionary`
+- Lead (2026-10-18) — L-1..L-4b ✅ · L-6a bootstrap$ ✅ · **L-6b.1 `kcvfh` (root dba، حجم الكتلة، ترتيب البايت) ✅ + `RdbaScheme` + LONG/LONG RAW — فرع `lead/dictionary`** · التالي L-6b.2: خرائط extents (0x10/0x23/0x24) ← صفوف bootstrap$ ← OBJ$/TAB$/COL$ (الخطة التفصيلية في `docs/handover/2026-10-18_handover.md`)
 - Astra — S1a PR #10: مراجعة Lead = تعديلات مطلوبة (B1 فصل التخطيط عن الإزاحة، B2 bigfile، B3 أغلبية بدل veto، B4 عتبة على الكتل الصالحة) — `genspark_ai_developer`
 ## معطّل / ينتظر
 - [2026-10-15] إجابات مقابلة خبير يمن سوفت (docs/research/02) — تحدد الأولويات: الإصدارات، الترميز العربي، ASM، الفدية

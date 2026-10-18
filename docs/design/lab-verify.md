@@ -11,7 +11,7 @@
 | LV-006 | `row/kdb.rs` | `fsbo = 14 + 4·ntab + 2·nrow` (نهاية دليل الصفوف) | BBED/block dumps | ⬜ |
 | LV-007 | `row/kdb.rs` | إزاحات kdbr نسبية لبداية kdbh | BBED `*kdbr[n]` | ⬜ |
 | LV-008 | `row/piece.rs` | nrid (dba 4 + slot 2، بترتيب الملف) موجود iff لم يُرفع العلم L | Lewis [W6] | ⬜ |
-| LV-009 | `row/piece.rs` | الطول الطويل `0xFE` + u16 **big-endian** على كل المنصات | oradul [G1] | ⬜ |
+| LV-009 | `row/piece.rs` | الطول الطويل `0xFE` + u16 **بترتيب بايت الملف** (الادعاء المنشور «big-endian دائماً» **مدحوض**) | oradul [G1] ← **مختبر 26ai (2026-10-18):** 21 صفاً في bootstrap$ بطول > 250 تنتهي تماماً عند بداية الصف التالي بـ LE فقط؛ BE يتجاوز الكتلة | ✅ **مُصحَّح** (LE مؤكَّد؛ BE يحتاج ملف big-endian) |
 | LV-010 | `row/piece.rs` | قطعة الوجهة لصف مهاجر قد تحمل hrid — غير مدعوم بعد | Lewis [W6] | ⬜ |
 | LV-011 | `charset/mod.rs` | معرّفات NLS_CHARSET_ID: 1/31/51/178/560/871/873/2000 | Oracle Globalization Guide | ⬜ |
 | LV-012 | `charset/mod.rs` | تحويل أوراكل لـ AR8MSWIN1256 يطابق جدول Microsoft cp1256 بايتاً بايتاً (0x80–0xFF) | unicode.org + WHATWG + Python | ⬜ يحتاج جدولاً بكل البايتات في المختبر |
@@ -51,3 +51,10 @@
 | LV-036 | `dict/kcvfh.rs` | 9i: `kcvfhrdb` يشير إلى مقطع التوافق (نوع `0x0D`) لا إلى `bootstrap$`؛ عنوان bootstrap$ داخل مدخلة `BOOTSTRP` — غير مدعوم (نرفض صراحةً عند نوع الكتلة 0x0D) | T3 eygle 2007 (تفريغ 9.2 + 10.2) | ⬜ خارج نطاق M3 |
 | LV-037 | `block.rs` `RdbaScheme` | لا يوجد في كتلة البيانات ما يحدد smallfile/bigfile؛ المصدر: `TS$.FLAGS`/`kcvfh`/المشغّل؛ `Rdba::split(Bigfile)` لا يُرجع رقم ملف أبداً | T1 Oracle Admin Guide (bigfile) — تخطيط البت: T4 | ⬜ |
 | LV-038 | `dict/` (قادم) | مخطط أعمدة `OBJ$`/`TAB$`/`COL$`/`USER$`/`TS$`/`SEG$`/`CLU$` يُقرأ من نص DDL في `bootstrap$` لا يُثبّت في الكود؛ ترتيب 9iR2 المرجعي محفوظ في `docs/research/05` | T1 `sql.bsq` 9.2 (نسخة منشورة كاملة) | ⬜ لكل إصدار |
+| LV-039 | `dict/segment.rs` | رأس MSSM 0x10: `ktemh` count@92/next@96/obj@100/flag@104، `ktetb` @108 (dba,nbk)؛ obj = DATA_OBJECT_ID | T2 منشور + **مختبر 26ai**: bootstrap$ (obj 59) وT_MSSM/T_MIGRATED (obj = dataobj# من dba_segments) | ✅ 26ai |
+| LV-040 | `dict/segment.rs` | رأس ASSM 0x23: map header @264 (count/next/obj/flag)، Extent Map @280 | T2 منشور + **مختبر 26ai**: 12 مقطعاً، خريطة الـ extents مطابقة لـ `dba_extents` حرفياً | ✅ 26ai |
+| LV-041 | `dict/segment.rs` | كتلة EMB 0x24: count@20، next@24، obj@28، flag@32، خريطة @36 | T2 (modb.pro، تفريغان) | ⬜ يحتاج مقطعاً > 307 extents |
+| LV-042 | `dict/bootstrap.rs` | في SYSTEM من نوع **bigfile** (26ai الافتراضي) تكتب `bootstrap$` العبارة `EXTENTS (FILE 1024 BLOCK b)` — 1024 علامة bigfile لا رقم ملف؛ المحلّل يجب أن يعامل `FILE 1024` كـ «الملف الحالي» | **مختبر 26ai** (كل الـ 59 كائناً) | ✅ 26ai |
+| LV-043 | `dict/segment.rs` | رأس MSSM يدرج الـ extent الأول **بعد** كتلة الرأس (dba_extents 128×128 ⇐ ktetb 129×127)؛ رأس ASSM يدرج الـ extent كاملاً (الرأس داخله) | **مختبر 26ai** T_MSSM، T_MIGRATED مقابل ASSM | ✅ 26ai |
+| LV-044 | `dict/kcvfh.rs` | `kcvfhrfn` = 1024 لملفات الـ bigfile؛ `kcvfhrdb` = 520 في **كل** ملفات الـ PDB (لا الملف 1 فقط) | **مختبر 26ai** `x$kcvfh` ×7 ملفات | ✅ 26ai |
+| LV-045 | `dict/bootstrap.rs` | 26ai: OBJ$ 37 عموداً، TAB$ 45، COL$ 37، USER$ 35 (مقابل 11g: 21/37/…) — يؤكد أن المخطط **يجب** أن يُقرأ من bootstrap$ | **مختبر 26ai** | ✅ 26ai |

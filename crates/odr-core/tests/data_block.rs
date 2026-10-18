@@ -31,12 +31,20 @@ fn put32(b: &mut [u8], o: usize, v: u32, ord: ByteOrder) {
     b[o..o + 4].copy_from_slice(&a);
 }
 
-/// Encode one column the way Oracle stores it.
-fn col(v: Option<&[u8]>) -> Vec<u8> {
+/// Encode one column the way Oracle stores it. The `0xFE` long length is in
+/// the file byte order (LV-009, confirmed on a real 26ai little-endian file).
+fn col(v: Option<&[u8]>, ord: ByteOrder) -> Vec<u8> {
     match v {
         None => vec![0xFF],
         Some(d) if d.len() <= 250 => [&[d.len() as u8][..], d].concat(),
-        Some(d) => [&[0xFE][..], &(d.len() as u16).to_be_bytes()[..], d].concat(),
+        Some(d) => {
+            let n = d.len() as u16;
+            let len = match ord {
+                ByteOrder::Little => n.to_le_bytes(),
+                ByteOrder::Big => n.to_be_bytes(),
+            };
+            [&[0xFE][..], &len[..], d].concat()
+        }
     }
 }
 
@@ -55,7 +63,7 @@ fn encode_piece(p: &Piece, ord: ByteOrder) -> Vec<u8> {
         v.extend(r);
     }
     for c in &p.cols {
-        v.extend(col(c.as_deref()));
+        v.extend(col(c.as_deref(), ord));
     }
     v
 }

@@ -22,6 +22,12 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 - `block::RdbaScheme` (smallfile/bigfile) + `Rdba::{smallfile, split, is_null}` — a bigfile rdba can never yield a file number (LV-031/037).
 - `value::ColumnType::{Long, LongRaw}` (type# 8/24; needed for `COL$.DEFAULT$`).
 - Research 05: authoritative 9iR2 `sql.bsq` column lists of `OBJ$`/`TAB$`/`COL$`/`USER$`/`TS$`/`SEG$`/`CLU$`, 10g bootstrap object map, ASSM segment-header/EMB extent-map layout notes.
+- **Lab ran for the first time (Oracle AI Database 26ai Free 23.26, in-sandbox Docker):** golden set `lab/out/golden/20261018T080131Z` (not committed): 15 tables + cluster, 141,613 truth values (`rows.psv`, DUMP 1016 incl. 4000-byte columns), 20,702 rowids, segment/extent/column metadata, block-dump traces, datafile copies after `SHUTDOWN IMMEDIATE`, `dbv` clean. `tests/golden_lab.rs` runs against it when `ODR_GOLDEN` is set (kcvfh vs `x$kcvfh`, every block Valid, bootstrap$ walk → 60 rows → 59-object catalog, 14 segment headers vs `dba_extents`).
+- Dictionary L-6b.2: `dict::segment` (extent maps of 0x10/0x23/0x24 + bounded `walk_segment`), `dict::source` (`BlockSource`, `FileSet` over read-only `Evidence`, `ImageSet`), `bootstrap$` column lists (`BootObject.columns`, LV-038/045).
+- `DecodeError: Serialize` (forensic reports).
+### Fixed
+- **`0xFE` long column length is in the file byte order, not big-endian** (LV-009 refuted on a real 26ai little-endian file: 21 bootstrap$ rows > 250 bytes). Previously every row with a > 250-byte value would have failed to decode on x86 files.
+- Lab scripts: SQL*Plus-breaking inline comments, NCHAR/VARCHAR2 mix in `T_JOURNAL`, `DUMP()` > 4000 bytes (ORA-01489) in the truth export.
 ### Changed
 - **Breaking (pre-1.0):** `row::piece::parse_piece` takes a `PieceFormat`; `RowPiece` gains `dscn` and `cluster`. Cluster pieces are no longer `Unsupported`.
 - `parse_piece` takes a `PieceFormat`; compressed blocks (`kdbh` 0x40) are rejected as `Unsupported` with an explicit reason; undocumented combinations (chained cluster pieces, chained/migrated rows with row dependencies) are `Unsupported`, never guessed.

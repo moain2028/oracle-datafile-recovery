@@ -6,11 +6,13 @@
 //! `OBJ$`, `TAB$`, `COL$`, `USER$`, `TS$`… → user tables. Every binary fact
 //! used here is in `docs/design/lab-verify.md` (LV-025..028, LV-032..035).
 //!
-//! Stage status: [`kcvfh`] ✅ (L-6b.1) · [`bootstrap`] ✅ (L-6a) · segment
-//! extent maps, `OBJ$`/`TAB$`/`COL$` readers and the resolver — next (see
-//! `docs/handover/`).
+//! Stage status: [`kcvfh`] ✅ · [`segment`] ✅ (extent maps, walker) ·
+//! [`bootstrap`] ✅ · `OBJ$`/`TAB$`/`COL$` readers and the resolver — next
+//! (see `docs/handover/`).
 
 pub mod bootstrap;
 pub mod kcvfh;
+pub mod segment;
+pub mod source;
 
 pub use kcvfh::FileHeader;

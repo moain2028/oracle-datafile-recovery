@@ -51,31 +51,80 @@ FROM dba_tab_cols WHERE owner = 'ODR' ORDER BY table_name, internal_column_id;
 SPOOL OFF
 
 -- Row-by-row, column-by-column truth. Generated SQL keeps this script schema-agnostic.
+-- DUMP(col,1016) is limited to 4000 bytes of output in SQL (ORA-01489 on a 4000-byte
+-- VARCHAR2), so the hex of the stored bytes is produced in PL/SQL from
+-- DUMP(col,1016,1,N) pieces of at most 1000 source bytes each and emitted as a CLOB
+-- line: TABLE|ID|COLUMN|ROWID|Typ=..|Len=..|CharacterSet=..|<hex bytes>|<canonical text>
 SET SERVEROUTPUT ON SIZE UNLIMITED
 SPOOL &2/rows.psv
 DECLARE
-  v_sql   CLOB;
-  v_cur   SYS_REFCURSOR;
-  v_line  VARCHAR2(32767);
+  v_sql    CLOB;
+  v_cur    SYS_REFCURSOR;
+  v_id     VARCHAR2(100);
+  v_rowid  VARCHAR2(40);
+  v_head   VARCHAR2(400);
+  v_len    PLS_INTEGER;
+  v_hex    CLOB;
+  v_piece  VARCHAR2(32767);
+  v_text   CLOB;
+  v_out    CLOB;
+  v_pos    PLS_INTEGER;
+  v_n      PLS_INTEGER;
+  PROCEDURE put_clob(c IN CLOB) IS
+    l PLS_INTEGER := DBMS_LOB.GETLENGTH(c); o PLS_INTEGER := 1;
+  BEGIN
+    IF l IS NULL OR l = 0 THEN DBMS_OUTPUT.PUT_LINE(''); RETURN; END IF;
+    WHILE o <= l LOOP
+      IF o + 32000 > l THEN DBMS_OUTPUT.PUT_LINE(DBMS_LOB.SUBSTR(c, l - o + 1, o));
+      ELSE DBMS_OUTPUT.PUT(DBMS_LOB.SUBSTR(c, 32000, o)); END IF;
+      o := o + 32000;
+    END LOOP;
+  END;
 BEGIN
   FOR t IN (SELECT table_name FROM dba_tables WHERE owner = 'ODR' ORDER BY table_name) LOOP
     FOR c IN (SELECT column_name, data_type FROM dba_tab_cols
               WHERE owner = 'ODR' AND table_name = t.table_name AND hidden_column = 'NO'
               ORDER BY column_id) LOOP
-      v_sql := 'SELECT ''' || t.table_name || '|'' || ID || ''|' || c.column_name || '|'' || ROWIDTOCHAR(ROWID) || ''|'' || ' ||
-               'NVL(DUMP("' || c.column_name || '",1016),''NULL'') || ''|'' || ' ||
+      v_sql := 'SELECT TO_CHAR(ID), ROWIDTOCHAR(ROWID), ' ||
+               'CASE WHEN "' || c.column_name || '" IS NULL THEN ''NULL'' ELSE ' ||
+               'REGEXP_SUBSTR(DUMP("' || c.column_name || '",1016,1,1), ''^Typ=[0-9]+ Len=[0-9]+'') END, ' ||
+               'NVL(TO_NUMBER(REGEXP_SUBSTR(DUMP("' || c.column_name || '",1016,1,1), ''Len=([0-9]+)'', 1, 1, NULL, 1)), 0), ' ||
+               'NVL(REGEXP_SUBSTR(DUMP("' || c.column_name || '",1016,1,1), ''CharacterSet=[A-Z0-9]+''), ''''), ' ||
                CASE
-                 WHEN c.data_type LIKE 'RAW%' THEN 'RAWTOHEX("' || c.column_name || '")'
-                 WHEN c.data_type LIKE '%CHAR%' THEN 'ASCIISTR("' || c.column_name || '")'
-                 WHEN c.data_type IN ('BINARY_FLOAT','BINARY_DOUBLE') THEN 'TO_CHAR("' || c.column_name || '",''TM9'')'
-                 ELSE 'TO_CHAR("' || c.column_name || '")'
+                 WHEN c.data_type LIKE 'RAW%' THEN 'TO_CLOB(RAWTOHEX("' || c.column_name || '"))'
+                 WHEN c.data_type LIKE '%CHAR%' THEN 'TO_CLOB(ASCIISTR("' || c.column_name || '"))'
+                 WHEN c.data_type IN ('BINARY_FLOAT','BINARY_DOUBLE') THEN 'TO_CLOB(TO_CHAR("' || c.column_name || '",''TM9''))'
+                 ELSE 'TO_CLOB(TO_CHAR("' || c.column_name || '"))'
                END ||
                ' FROM ODR."' || t.table_name || '" ORDER BY ID';
       OPEN v_cur FOR v_sql;
       LOOP
-        FETCH v_cur INTO v_line;
+        FETCH v_cur INTO v_id, v_rowid, v_head, v_len, v_piece, v_text;
         EXIT WHEN v_cur%NOTFOUND;
-        DBMS_OUTPUT.PUT_LINE(v_line);
+        DBMS_LOB.CREATETEMPORARY(v_hex, TRUE);
+        IF v_head <> 'NULL' THEN
+          v_pos := 1;
+          WHILE v_pos <= v_len LOOP
+            v_n := LEAST(1000, v_len - v_pos + 1);
+            EXECUTE IMMEDIATE 'SELECT REGEXP_REPLACE(DUMP("' || c.column_name || '",1016,' || v_pos || ',' || v_n ||
+                              '), ''^.*: '', '''') FROM ODR."' || t.table_name || '" WHERE ROWID = CHARTOROWID(:r)'
+              INTO v_sql USING v_rowid;
+            -- strip trailing " CharacterSet=..." if present, keep "hh,hh,..."
+            v_sql := REGEXP_REPLACE(v_sql, ' CharacterSet=.*$', '');
+            IF v_pos > 1 THEN DBMS_LOB.WRITEAPPEND(v_hex, 1, ','); END IF;
+            DBMS_LOB.APPEND(v_hex, v_sql);
+            v_pos := v_pos + v_n;
+          END LOOP;
+        END IF;
+        DBMS_LOB.CREATETEMPORARY(v_out, TRUE);
+        DBMS_LOB.APPEND(v_out, TO_CLOB(t.table_name || '|' || v_id || '|' || c.column_name || '|' || v_rowid || '|' ||
+                                       v_head || '|' || v_piece || '|'));
+        DBMS_LOB.APPEND(v_out, v_hex);
+        DBMS_LOB.APPEND(v_out, TO_CLOB('|'));
+        IF v_text IS NOT NULL THEN DBMS_LOB.APPEND(v_out, v_text); END IF;
+        put_clob(v_out);
+        DBMS_LOB.FREETEMPORARY(v_out);
+        DBMS_LOB.FREETEMPORARY(v_hex);
       END LOOP;
       CLOSE v_cur;
     END LOOP;

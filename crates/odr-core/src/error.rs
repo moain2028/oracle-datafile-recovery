@@ -2,11 +2,12 @@
 //! `Clone` and comparable (useful for tests and for recording decisions in the
 //! evidence ledger). [`OdrError`] is the top-level error including I/O.
 
+use serde::Serialize;
 use thiserror::Error;
 
 /// An error produced while decoding untrusted bytes. Never fatal for a scan:
 /// callers record it and continue with the next block (REQ-001.4).
-#[derive(Debug, Clone, PartialEq, Eq, Error)]
+#[derive(Debug, Clone, PartialEq, Eq, Error, Serialize)]
 #[non_exhaustive]
 pub enum DecodeError {
     /// Not enough bytes for the requested read.

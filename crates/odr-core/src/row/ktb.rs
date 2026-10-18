@@ -7,7 +7,8 @@
 //! | 0x14   | 1      | `ktbbhtyp`   | 1 = data (table/cluster), 2 = index        |
 //! | 0x18   | 4      | `ktbbhsid`   | `DATA_OBJECT_ID` of the owning segment     |
 //! | 0x1C   | 8      | `ktbbhcsc`   | cleanout SCN (base u32, wrap u16, pad)     |
-//! | 0x24   | 2      | `ktbbhict`   | number of ITL entries                      |
+//! | 0x24   | 1      | `ktbbhict`   | number of ITL entries (**one byte**)       |
+//! | 0x25   | 1      | —            | reserved/other; `0x1F` seen on 26ai blocks |
 //! | 0x26   | 1      | `ktbbhflg`   | flags (`0x01` = on freelist, MSSM)         |
 //! | 0x27   | 1      | `ktbbhfsl`   | ITL freelist slot                          |
 //! | 0x28   | 4      | `ktbbhfnx`   | next block on freelist (rdba)              |
@@ -18,6 +19,8 @@
 //! bits locked rows), `fsc`/`scn wrap` (u16), commit SCN base (u32).
 //!
 //! Sources: published BBED `map /v` struct listings; Lewis, *Oracle Core* \[A11\].
+//! `ktbbhict` width: lab 26ai block dumps print `itc: 2` for raw bytes
+//! `02 1F` at 0x24..0x26 (LV-047) — a 16-bit read would give 7938.
 
 // Offset arithmetic below combines a bounded base (kdbh offset <= 0x2C + 24*255 + 8)
 // with `u16`/`u8` header values, so every sum stays below 2^18 and cannot overflow
@@ -35,7 +38,8 @@ pub const KTBBH_OFF: usize = KCBH_LEN;
 pub const ITL_OFF: usize = 0x2C;
 /// Size of one ITL entry.
 pub const ITL_LEN: usize = 24;
-/// Upper bound for the ITL count. Oracle caps `MAXTRANS` at 255.
+/// Upper bound for the ITL count. Oracle caps `MAXTRANS` at 255 (the
+/// one-byte `ktbbhict` cannot exceed it; kept for callers' bounds).
 pub const MAX_ITL: u16 = 255;
 
 /// `ktbbhtyp` values.
@@ -78,13 +82,10 @@ impl Ktbbh {
         let objd = read_u32(block, 0x18, order)?;
         let base = read_u32(block, 0x1C, order)?;
         let wrap = read_u16(block, 0x20, order)?;
-        let itl_count = read_u16(block, 0x24, order)?;
-        if itl_count == 0 || itl_count > MAX_ITL {
-            return Err(DecodeError::malformed(
-                WHAT,
-                0x24,
-                "ITL count outside 1..=255",
-            ));
+        // LV-047: one byte. Byte 0x25 is not part of the count.
+        let itl_count = u16::from(read_u8(block, 0x24)?);
+        if itl_count == 0 {
+            return Err(DecodeError::malformed(WHAT, 0x24, "ITL count is zero"));
         }
         let h = Self {
             kind: match typ {

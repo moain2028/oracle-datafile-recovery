@@ -324,3 +324,150 @@ fn lab_corpus_segment_headers_match_dba_extents() {
     }
     assert!(checked >= 14, "checked {checked} segments");
 }
+
+/// Row readers over the real corpus: every table's row count and every
+/// head-piece rowid must equal what Oracle reported (`meta/rowcounts.txt`,
+/// `meta/rowids.psv`). This exercises heap (ASSM/MSSM/bigfile), chained,
+/// migrated, ROWDEPENDENCIES, deleted-row skipping and the cluster reader.
+#[test]
+fn lab_row_readers_match_oracle_rowids() {
+    use odr_core::dict::rows::{read_cluster, read_heap};
+    use odr_core::dict::source::{BlockSource, FileInfo, ImageSet};
+    use std::collections::{BTreeMap, BTreeSet};
+    let Some(g) = golden() else { return };
+    let mut src = ImageSet::new(ByteOrder::Little);
+    for (file, rel, name, scheme) in [
+        (16u32, Some(16u32), "odr_odr_assm01", RdbaScheme::Smallfile),
+        (17, Some(17), "odr_odr_mssm01", RdbaScheme::Smallfile),
+        (18, None, "odr_odr_big01", RdbaScheme::Bigfile),
+    ] {
+        src.add(
+            FileInfo {
+                file,
+                relative: rel,
+                block_size: BS,
+                scheme,
+            },
+            read_file(&g.join(format!("datafiles/{name}.dbf"))),
+        );
+    }
+    // Oracle truth: table -> set of (rfile, block, slot) and counts.
+    let mut truth: BTreeMap<String, BTreeSet<(u32, u32, u16)>> = BTreeMap::new();
+    for l in std::fs::read_to_string(g.join("meta/rowids.psv"))
+        .unwrap()
+        .lines()
+    {
+        let p: Vec<&str> = l.split('|').collect();
+        if p.len() == 6 {
+            // DBMS_ROWID.ROWID_RELATIVE_FNO returns 0 for a bigfile
+            // tablespace (no file bits in the rdba); ODR reports the bigfile
+            // marker 1024 (`kcvfhrfn`), so normalise here.
+            let rel: u32 = p[3].parse().unwrap();
+            truth.entry(p[0].to_owned()).or_default().insert((
+                if rel == 0 { 1024 } else { rel },
+                p[4].parse().unwrap(),
+                p[5].parse().unwrap(),
+            ));
+        }
+    }
+    let counts: BTreeMap<String, usize> = std::fs::read_to_string(g.join("meta/rowcounts.txt"))
+        .unwrap()
+        .lines()
+        .filter_map(|l| l.split_once('|'))
+        .map(|(t, n)| (t.to_owned(), n.trim().parse().unwrap()))
+        .collect();
+    let segs = std::fs::read_to_string(g.join("meta/segments.txt")).unwrap();
+    // Cluster members: T_CL_* live in C_ODR. Find C_ODR's header + each table's tab#.
+    // tab# is not in meta; derive it from the segment's kdbt order by trying 1..=3 and
+    // matching rowid sets (there are only two member tables).
+    let mut checked = 0;
+    for line in segs.lines() {
+        let p: Vec<&str> = line.split('|').collect();
+        if p.len() < 7 {
+            continue;
+        }
+        let (name, dataobj, kind, file, hb): (&str, u32, &str, u32, u32) = (
+            p[0],
+            p[2].parse().unwrap(),
+            p[3],
+            p[5].parse().unwrap(),
+            p[6].parse().unwrap(),
+        );
+        let scheme = src.scheme(file).unwrap();
+        let hdr = src
+            .block(odr_core::dict::source::BlockAddr { file, block: hb })
+            .unwrap();
+        let seg = walk_segment(&hdr, ByteOrder::Little, Rdba(0), |r| {
+            let a = src.resolve(r, file)?;
+            src.block(a)
+        })
+        .unwrap();
+        assert!(seg.issues.is_empty(), "{name}: {:?}", seg.issues);
+        let _ = scheme;
+        if kind == "CLUSTER" {
+            // Member tables of C_ODR: T_CL_DEPT (tab 1) and T_CL_EMP (tab 2) in creation order.
+            for (tab, tname, clucols) in [(1usize, "T_CL_DEPT", 2usize), (2, "T_CL_EMP", 2)] {
+                let Some(want) = truth.get(tname) else {
+                    continue;
+                };
+                let got = read_cluster(&src, &seg, file, dataobj, tab, clucols);
+                let ok: BTreeSet<(u32, u32, u16)> = got
+                    .rows
+                    .iter()
+                    .filter_map(|r| r.as_ref().ok())
+                    .map(|r| {
+                        (
+                            Rdba(r.provenance.rdba).file(),
+                            Rdba(r.provenance.rdba).block(),
+                            r.rowid_row,
+                        )
+                    })
+                    .collect();
+                let errs: Vec<_> = got.rows.iter().filter_map(|r| r.as_ref().err()).collect();
+                assert!(errs.is_empty(), "{tname}: {errs:?}");
+                assert_eq!(ok.len(), counts[tname], "{tname}: row count");
+                assert_eq!(&ok, want, "{tname}: rowid set");
+                checked += 1;
+            }
+            continue;
+        }
+        let Some(want) = truth.get(name) else {
+            continue;
+        };
+        let got = read_heap(&src, &seg, file, dataobj);
+        let errs: Vec<_> = got.rows.iter().filter_map(|r| r.as_ref().err()).collect();
+        assert!(errs.is_empty(), "{name}: {errs:?}");
+        let ok: BTreeSet<(u32, u32, u16)> = got
+            .rows
+            .iter()
+            .filter_map(|r| r.as_ref().ok())
+            .map(|r| {
+                let (f, b) = Rdba(r.provenance.rdba).split(scheme);
+                (f.unwrap_or(1024), b, r.rowid_row)
+            })
+            .collect();
+        assert_eq!(
+            ok.len(),
+            counts[name],
+            "{name}: row count (deleted rows must be skipped)"
+        );
+        assert_eq!(&ok, want, "{name}: rowid set");
+        if name == "T_CHAINED" || name == "T_MIGRATED" {
+            let multi = got
+                .rows
+                .iter()
+                .filter(|r| r.as_ref().is_ok_and(|r| r.pieces.len() > 1))
+                .count();
+            assert!(multi > 0, "{name}: expected multi-piece rows, got none");
+        }
+        assert!(
+            got.skipped
+                .iter()
+                .all(|(_, s)| !matches!(s, odr_core::dict::rows::Skip::Malformed(_))),
+            "{name}: {:?}",
+            got.skipped
+        );
+        checked += 1;
+    }
+    assert!(checked >= 14, "checked {checked}");
+}

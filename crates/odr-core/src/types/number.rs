@@ -184,6 +184,83 @@ impl OraNumber {
     }
 }
 
+/// Encode a decimal literal (`-12.5`, `007`, `+3.`, `.25`) into Oracle
+/// `NUMBER` bytes, exactly (no floating point). Used for `DEFAULT$`
+/// literals. Returns `None` for anything that is not a plain decimal
+/// literal, has more than 40 significant decimal digits, or whose exponent
+/// is outside Oracle's range.
+pub fn encode_decimal(text: &str) -> Option<Vec<u8>> {
+    let t = text.trim();
+    let (negative, body) = match t.as_bytes().first()? {
+        b'-' => (true, t.get(1..)?),
+        b'+' => (false, t.get(1..)?),
+        _ => (false, t),
+    };
+    let (int_part, frac_part) = body.split_once('.').unwrap_or((body, ""));
+    if int_part.is_empty() && frac_part.is_empty() {
+        return None;
+    }
+    if !int_part.bytes().all(|b| b.is_ascii_digit())
+        || !frac_part.bytes().all(|b| b.is_ascii_digit())
+    {
+        return None;
+    }
+    // Decimal digits with the point position; strip leading/trailing zeros.
+    let int_digits = int_part.trim_start_matches('0');
+    let frac_digits = frac_part.trim_end_matches('0');
+    if int_digits.is_empty() && frac_digits.is_empty() {
+        return Some(vec![0x80]);
+    }
+    // Position of the decimal point measured in decimal digits from the
+    // start of `all` (may be negative when 0.000x).
+    let mut all: Vec<u8> = Vec::new();
+    all.extend(int_digits.bytes().map(|b| b - b'0'));
+    let mut point = i32::try_from(all.len()).ok()?;
+    let lead_frac_zeros = frac_digits.len() - frac_digits.trim_start_matches('0').len();
+    if all.is_empty() {
+        point -= i32::try_from(lead_frac_zeros).ok()?;
+        all.extend(frac_digits.bytes().skip(lead_frac_zeros).map(|b| b - b'0'));
+    } else {
+        all.extend(frac_digits.bytes().map(|b| b - b'0'));
+    }
+    // Align to base-100: if `point` is odd, prepend a zero digit.
+    if point.rem_euclid(2) != 0 {
+        all.insert(0, 0);
+        point += 1;
+    }
+    if all.len() % 2 == 1 {
+        all.push(0);
+    }
+    let mut digits: Vec<u8> = all
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|[hi, lo]| hi * 10 + lo)
+        .collect();
+    while digits.last() == Some(&0) {
+        digits.pop();
+    }
+    if digits.len() > MAX_DIGITS {
+        return None;
+    }
+    let exponent = point / 2 - 1; // base-100 exponent of the first digit
+    if !(-65..=62).contains(&exponent) {
+        return None;
+    }
+    let mut out = Vec::with_capacity(digits.len() + 2);
+    if negative {
+        out.push(u8::try_from(0x3E - exponent).ok()?);
+        out.extend(digits.iter().map(|d| 101 - d));
+        if digits.len() < MAX_DIGITS {
+            out.push(0x66);
+        }
+    } else {
+        out.push(u8::try_from(0xC1 + exponent).ok()?);
+        out.extend(digits.iter().map(|d| d + 1));
+    }
+    Some(out)
+}
+
 impl fmt::Display for OraNumber {
     /// Canonical decimal text, e.g. `0`, `-12.5`, `0.000123`, `1E+125` is
     /// written out in full (`1` followed by 125 zeros). Infinity: `~` / `-~`
@@ -259,6 +336,34 @@ mod tests {
         assert_eq!(s(&[0xBF, 0x02]), "0.0001");
         assert_eq!(s(&[0xFF, 0x65]), "~");
         assert_eq!(s(&[0x00]), "-~");
+    }
+
+    #[test]
+    fn encode_decimal_round_trips_known_vectors() {
+        for (text, bytes) in [
+            ("0", &[0x80][..]),
+            ("1", &[0xC1, 0x02]),
+            ("100", &[0xC2, 0x02]),
+            ("101", &[0xC2, 0x02, 0x02]),
+            ("0.5", &[0xC0, 0x33]),
+            ("12.33", &[0xC1, 0x0D, 0x22]),
+            ("-1", &[0x3E, 0x64, 0x66]),
+            ("-100", &[0x3D, 0x64, 0x66]),
+            ("-12.33", &[0x3E, 0x59, 0x44, 0x66]),
+            ("0.0001", &[0xBF, 0x02]),
+            ("007.50", &[0xC1, 0x08, 0x33]),
+            ("+.25", &[0xC0, 0x1A]),
+        ] {
+            assert_eq!(encode_decimal(text).as_deref(), Some(bytes), "{text}");
+            assert_eq!(
+                s(bytes),
+                s(&encode_decimal(text).unwrap_or_default()),
+                "{text}"
+            );
+        }
+        for bad in ["", "-", ".", "1e5", "1,5", "abc", "1 2"] {
+            assert_eq!(encode_decimal(bad), None, "{bad}");
+        }
     }
 
     #[test]

@@ -13,6 +13,8 @@
 //!   bytes**, which is why the block flag is threaded through [`PieceFormat`].
 //! * `nrid` is present when the piece is **not** the last one (flag `L`
 //!   clear) and points at the next piece (chained / migrated rows) — LV-008.
+//!   Both `nrid` and `hrid` are **big-endian on every platform** (LV-049,
+//!   verified on a 26ai little-endian file) — unlike the `0xFE` length word.
 //! * `hrid` is present on the destination piece of a migrated row: flag `F`
 //!   set, `H` clear — LV-010.
 //! * Column length byte: `0..=250` = length, `0xFE` = next two bytes hold the
@@ -55,8 +57,20 @@ struct Header {
     dscn: Option<Scn>,
 }
 
+/// `nrid` / `hrid`: dba (4) + slot (2), **always big-endian** — independent
+/// of the file byte order (LV-049: 26ai little-endian file stores
+/// `04 00 05 A8 00 00` for 16/1448 slot 0; a little-endian read would give
+/// file 672 block 0x4004).
 fn rid(c: &mut Cursor<'_>) -> DecodeResult<(u32, u16)> {
-    Ok((c.u32()?, c.u16()?))
+    let b = c.take(6)?;
+    let dba = u32::from_be_bytes([
+        *b.first().unwrap_or(&0),
+        *b.get(1).unwrap_or(&0),
+        *b.get(2).unwrap_or(&0),
+        *b.get(3).unwrap_or(&0),
+    ]);
+    let slot = u16::from_be_bytes([*b.get(4).unwrap_or(&0), *b.get(5).unwrap_or(&0)]);
+    Ok((dba, slot))
 }
 
 /// Cluster key / member header (after `cc`).

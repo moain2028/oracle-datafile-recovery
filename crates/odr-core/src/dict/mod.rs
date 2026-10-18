@@ -12,6 +12,8 @@
 
 pub mod bootstrap;
 pub mod kcvfh;
+pub mod rows;
+pub mod schema;
 pub mod segment;
 pub mod source;
 

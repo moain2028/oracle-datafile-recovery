@@ -122,3 +122,14 @@ sha256sum -c odr_golden.sha256 && tar -xzf odr_golden_26ai_*.tar.gz && ls
 | `no space left on device` أثناء `docker cp` | نسخ 3.6 GB datafiles | أبقِ 4 ملفات فقط (أعلاه) |
 | `git push` يفشل `Invalid username or token` | انتهاء توكن المنصة المؤقت | اكتب توكن المالك في `~/.git-credentials` |
 | `golden_lab` يفشل على bootstrap$ | **اكتشاف حقيقي**: طول `0xFE` بترتيب الملف لا BE | أُصلح في `row/piece.rs` (LV-009) |
+
+## Fuzz محلياً (مطلوب قبل كل PR يلمس محلّلاً)
+```bash
+rustup toolchain install nightly --profile minimal -c rust-src
+cargo install cargo-fuzz --locked
+cd fuzz && cargo check --bins            # يجب أن يمر مع كل تغيير API عام
+for t in kcvfh segment bootstrap_columns row_piece data_block; do
+  cargo +nightly fuzz run "$t" -- -max_total_time=45
+done
+# عند crash: cargo +nightly fuzz run <t> artifacts/<t>/crash-*  → أصلح → أعد التشغيل → احذف artifacts/
+```

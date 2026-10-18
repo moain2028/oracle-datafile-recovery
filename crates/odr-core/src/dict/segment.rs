@@ -178,12 +178,24 @@ impl ExtentMap {
             ));
         }
         let mut extents = Vec::with_capacity(n);
+        let mut claimed: u64 = 0;
         for i in 0..n {
             let o = map + 8 * i;
             let dba = Rdba(read_u32(block, o, order)?);
             let blocks = read_u32(block, o + 4, order)?;
             if dba.is_null() || blocks == 0 {
                 break;
+            }
+            // A single map can never describe more than MAX_SEGMENT_BLOCKS
+            // (fuzz finding 2026-10-18): refuse here so no caller sizes
+            // anything from a corrupt entry.
+            claimed = claimed.saturating_add(u64::from(blocks));
+            if claimed > MAX_SEGMENT_BLOCKS {
+                return Err(DecodeError::malformed(
+                    WHAT,
+                    o,
+                    "extent map claims more than 2^26 blocks",
+                ));
             }
             extents.push(Extent { dba, blocks });
         }
@@ -592,12 +604,12 @@ mod tests {
         assert!(ExtentMap::parse(&h, ByteOrder::Little).is_err());
         assert!(ExtentMap::parse(&[0u8; 8192], ByteOrder::Little).is_err());
         assert!(ExtentMap::parse(&boot_hdr()[..100], ByteOrder::Little).is_err());
-        // A forged extent claiming 2^32-1 blocks is refused by the walker.
+        // A forged extent claiming 2^32-1 blocks is refused by the parser
+        // itself (fuzz finding 2026-10-18), so the walker never sees it.
         let mut h = boot_hdr();
         h[112..116].copy_from_slice(&u32::MAX.to_le_bytes());
         h[40..44].copy_from_slice(&u32::MAX.to_le_bytes());
-        let w = walk_segment(&h, ByteOrder::Little, Rdba(0x0040_0179), |_| None).unwrap();
-        assert_eq!(w.extents, Vec::new());
-        assert!(w.issues.contains(&WalkIssue::TooManyBlocks));
+        assert!(ExtentMap::parse(&h, ByteOrder::Little).is_err());
+        assert!(walk_segment(&h, ByteOrder::Little, Rdba(0x0040_0179), |_| None).is_err());
     }
 }

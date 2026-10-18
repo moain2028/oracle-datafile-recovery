@@ -59,3 +59,21 @@ name = "bootstrap"
 path = "fuzz_targets/bootstrap.rs"
 test = false
 doc = false
+
+[[bin]]
+name = "kcvfh"
+path = "fuzz_targets/kcvfh.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "segment"
+path = "fuzz_targets/segment.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "bootstrap_columns"
+path = "fuzz_targets/bootstrap_columns.rs"
+test = false
+doc = false

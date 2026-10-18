@@ -63,6 +63,47 @@ pub struct FileInfo {
     pub block_size: usize,
     /// Rdba scheme of the tablespace.
     pub scheme: RdbaScheme,
+    /// Tablespace number (`kcvfhtsn`), when known. Relative file numbers are
+    /// unique only **within** a tablespace (LV-055), so a lookup by relative
+    /// number must be scoped to the tablespace of the file holding the rdba.
+    pub tablespace: Option<u32>,
+}
+
+impl FileInfo {
+    /// Registration derived from a parsed datafile header (`kcvfh`).
+    pub fn from_header(h: &crate::dict::kcvfh::FileHeader) -> Self {
+        Self {
+            file: u32::from(h.file_number),
+            relative: h.relative_file,
+            block_size: usize::try_from(h.block_size).unwrap_or(0),
+            scheme: if h.relative_file.is_none() {
+                RdbaScheme::Bigfile
+            } else {
+                RdbaScheme::Smallfile
+            },
+            tablespace: h.tablespace,
+        }
+    }
+}
+
+/// Shared relative→absolute rule (LV-055): prefer a file in the same
+/// tablespace as `hint`; fall back to a unique match across all files; an
+/// ambiguous match is `None` (never a guess).
+fn absolute_by_relative<'a, I>(files: I, rel: u32, hint_ts: Option<u32>) -> Option<u32>
+where
+    I: Iterator<Item = &'a FileInfo> + Clone,
+{
+    if let Some(ts) = hint_ts {
+        let mut same = files
+            .clone()
+            .filter(|i| i.relative == Some(rel) && i.tablespace == Some(ts));
+        if let Some(f) = same.next() {
+            return same.next().is_none().then_some(f.file);
+        }
+    }
+    let mut any = files.filter(|i| i.relative == Some(rel));
+    let f = any.next()?;
+    any.next().is_none().then_some(f.file)
 }
 
 /// In-memory images, keyed by absolute file number. For tests and fuzzing.
@@ -100,11 +141,10 @@ impl BlockSource for ImageSet {
     fn absolute_file(&self, rel: Option<u32>, hint: u32) -> Option<u32> {
         match rel {
             None => Some(hint),
-            Some(r) => self
-                .files
-                .values()
-                .find(|(i, _)| i.relative == Some(r))
-                .map(|(i, _)| i.file),
+            Some(r) => {
+                let ts = self.files.get(&hint).and_then(|(i, _)| i.tablespace);
+                absolute_by_relative(self.files.values().map(|(i, _)| i), r, ts)
+            }
         }
     }
     fn block(&self, addr: BlockAddr) -> Option<Vec<u8>> {
@@ -170,11 +210,10 @@ impl BlockSource for FileSet {
     fn absolute_file(&self, rel: Option<u32>, hint: u32) -> Option<u32> {
         match rel {
             None => Some(hint),
-            Some(r) => self
-                .files
-                .values()
-                .find(|(i, _)| i.relative == Some(r))
-                .map(|(i, _)| i.file),
+            Some(r) => {
+                let ts = self.files.get(&hint).and_then(|(i, _)| i.tablespace);
+                absolute_by_relative(self.files.values().map(|(i, _)| i), r, ts)
+            }
         }
     }
     fn block(&self, addr: BlockAddr) -> Option<Vec<u8>> {
@@ -212,6 +251,7 @@ mod tests {
                 relative: Some(1),
                 block_size: 16,
                 scheme: RdbaScheme::Smallfile,
+                tablespace: Some(4),
             },
             (0..64u8).collect(),
         );
@@ -221,6 +261,7 @@ mod tests {
                 relative: None,
                 block_size: 16,
                 scheme: RdbaScheme::Bigfile,
+                tablespace: Some(5),
             },
             (100..164u8).collect(),
         );
@@ -243,5 +284,25 @@ mod tests {
             }),
             None
         );
+    }
+
+    #[test]
+    fn relative_numbers_are_scoped_to_the_tablespace() {
+        // LV-055: two tablespaces both have relative file 1.
+        let fi = |file, ts| FileInfo {
+            file,
+            relative: Some(1),
+            block_size: 16,
+            scheme: RdbaScheme::Smallfile,
+            tablespace: Some(ts),
+        };
+        let mut s = ImageSet::new(ByteOrder::Little);
+        s.add(fi(7, 4), vec![0; 32]);
+        s.add(fi(9, 5), vec![0; 32]);
+        assert_eq!(s.absolute_file(Some(1), 7), Some(7));
+        assert_eq!(s.absolute_file(Some(1), 9), Some(9));
+        // Unknown hint and two candidates: ambiguous -> None, never a guess.
+        assert_eq!(s.absolute_file(Some(1), 42), None);
+        assert_eq!(s.absolute_file(Some(2), 7), None);
     }
 }

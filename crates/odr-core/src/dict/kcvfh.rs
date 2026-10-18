@@ -202,10 +202,14 @@ impl FileHeader {
         }
     }
 
-    /// Whether this header belongs to the file that carries the dictionary
-    /// root (`kccfhfno == 1` with a non-null root dba).
+    /// Whether the header carries a non-null dictionary root dba.
+    ///
+    /// LV-044/LV-053: this is **necessary, not sufficient**. In a 26ai PDB
+    /// the SYSTEM file is absolute file 12 (not 1) and *every* PDB datafile
+    /// repeats `kcvfhrdb = 520`. Only walking the root segment and finding
+    /// `bootstrap$` rows (`Dictionary::load`) proves the file is SYSTEM.
     pub const fn has_dictionary_root(&self) -> bool {
-        self.file_number == 1 && !self.root_dba.is_null()
+        !self.root_dba.is_null()
     }
 }
 

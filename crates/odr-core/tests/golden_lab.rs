@@ -352,6 +352,7 @@ fn lab_row_readers_match_oracle_rowids() {
                 relative: rel,
                 block_size: BS,
                 scheme,
+                tablespace: None,
             },
             read_file(&g.join(format!("datafiles/{name}.dbf"))),
         );
@@ -504,6 +505,7 @@ fn lab_values_match_oracle_dump_byte_for_byte() {
                 relative: rel,
                 block_size: BS,
                 scheme,
+                tablespace: None,
             },
             read_file(&g.join(format!("datafiles/{name}.dbf"))),
         );
@@ -807,4 +809,345 @@ fn lab_values_match_oracle_dump_byte_for_byte() {
     );
     assert!(tables_checked >= 12, "tables {tables_checked}");
     assert!(values_checked >= 140_000, "values {values_checked}");
+}
+
+/// Step f: `Dictionary::load` on the real 26ai SYSTEM file. Every ODR table
+/// must come out with the obj#/dataobj#, tablespace, segment header, column
+/// names, types, nullability and segcol# that Oracle reports in
+/// `meta/segments.txt` and `meta/columns.txt`; owner must resolve to `ODR`;
+/// `T_ADDCOL`'s fast-added columns must carry `DEFAULT$` and the property bit.
+#[test]
+fn lab_dictionary_resolves_odr_tables_like_oracle() {
+    use odr_core::dict::resolver::Dictionary;
+    use odr_core::dict::source::{FileInfo, ImageSet};
+    use std::collections::BTreeMap;
+    let Some(g) = golden() else { return };
+    let mut src = ImageSet::new(ByteOrder::Little);
+    src.add(
+        FileInfo {
+            file: 12,
+            relative: None,
+            block_size: BS,
+            scheme: RdbaScheme::Bigfile,
+            tablespace: None,
+        },
+        read_file(&g.join("datafiles/FREE_FREEPDB1_system01.dbf")),
+    );
+    let dict = Dictionary::load(&src, 12).unwrap();
+    eprintln!(
+        "dictionary: {} objects, {} tabs, {} tables with cols, {} users, {} tablespaces, {} issues",
+        dict.objects.len(),
+        dict.tabs.len(),
+        dict.cols.len(),
+        dict.users.len(),
+        dict.tablespaces.len(),
+        dict.issues.len()
+    );
+    for i in dict.issues.iter().take(20) {
+        eprintln!("  issue: {i:?}");
+    }
+    assert_eq!(dict.catalog.version.as_deref(), Some("8.0.0.0.0"));
+    assert!(dict.objects.len() > 1000, "OBJ$ rows");
+    assert!(dict.users.values().any(|u| u == "SYS"));
+    assert!(dict.users.values().any(|u| u == "ODR"));
+    // Oracle truth: datafiles.txt gives ts names; segments.txt the segments.
+    let ts_names: Vec<String> = std::fs::read_to_string(g.join("meta/datafiles.txt"))
+        .unwrap()
+        .lines()
+        .filter_map(|l| l.split('|').nth(2).map(str::to_owned))
+        .collect();
+    for n in &ts_names {
+        assert!(
+            dict.tablespaces.values().any(|t| t == n),
+            "TS$ missing {n}: {:?}",
+            dict.tablespaces
+        );
+    }
+    let mut cols: BTreeMap<String, Vec<Vec<String>>> = BTreeMap::new();
+    for l in std::fs::read_to_string(g.join("meta/columns.txt"))
+        .unwrap()
+        .lines()
+    {
+        let p: Vec<String> = l.split('|').map(str::to_owned).collect();
+        if p.len() == 11 {
+            cols.entry(p[0].clone()).or_default().push(p);
+        }
+    }
+    let tables = dict.tables();
+    let odr: Vec<_> = tables
+        .iter()
+        .filter(|t| t.owner_name.as_deref() == Some("ODR"))
+        .collect();
+    let mut checked = 0;
+    for line in std::fs::read_to_string(g.join("meta/segments.txt"))
+        .unwrap()
+        .lines()
+    {
+        let p: Vec<&str> = line.split('|').collect();
+        if p.len() < 7 || p[3] != "TABLE" {
+            continue;
+        }
+        let (name, obj, dataobj, ts, file, hb): (&str, u32, u32, &str, u32, u32) = (
+            p[0],
+            p[1].parse().unwrap(),
+            p[2].parse().unwrap(),
+            p[4],
+            p[5].parse().unwrap(),
+            p[6].parse().unwrap(),
+        );
+        let t = odr.iter().find(|t| t.name == name).unwrap_or_else(|| {
+            panic!(
+                "{name} not resolved; have {:?}",
+                odr.iter().map(|t| &t.name).collect::<Vec<_>>()
+            )
+        });
+        assert_eq!(t.obj, obj, "{name} obj#");
+        assert_eq!(t.dataobj, Some(dataobj), "{name} dataobj#");
+        assert_eq!(dict.tablespace_name(t.ts), Some(ts), "{name} tablespace");
+        // TAB$.FILE# is the relative file number (16/17 smallfile, 1024 bigfile).
+        let rel = if ts == "ODR_BIG" { 1024 } else { file };
+        assert_eq!((t.file, t.block), (rel, hb), "{name} segment header");
+        assert!(!t.is_clustered(), "{name}");
+        assert_eq!(
+            t.has_row_dependencies(),
+            name == "T_ROWDEP",
+            "{name} rowdep flag"
+        );
+        // Columns vs dba_tab_cols.
+        let want = &cols[name];
+        let got = &t.columns;
+        assert_eq!(got.len(), want.len(), "{name}: column count");
+        for w in want {
+            let c = got
+                .iter()
+                .find(|c| c.name == w[2])
+                .unwrap_or_else(|| panic!("{name}.{}: missing", w[2]));
+            let segcol: u32 = w[8].parse().unwrap_or(0);
+            assert_eq!(c.segcol, segcol, "{name}.{} segcol#", w[2]);
+            assert_eq!(c.not_null, w[7] == "N", "{name}.{} nullability", w[2]);
+            assert_eq!(c.is_visible(), w[9] == "NO", "{name}.{} hidden", w[2]);
+            let ty = c.column_type();
+            let want_ty = match w[3].as_str() {
+                "NUMBER" => "Number",
+                "VARCHAR2" | "NVARCHAR2" => "Varchar2",
+                "CHAR" | "NCHAR" => "Char",
+                "RAW" => "Raw",
+                "DATE" => "Date",
+                "BINARY_FLOAT" => "BinaryFloat",
+                "BINARY_DOUBLE" => "BinaryDouble",
+                s if s.starts_with("TIMESTAMP") && s.ends_with("LOCAL TIME ZONE") => "TimestampLtz",
+                s if s.starts_with("TIMESTAMP") && s.ends_with("TIME ZONE") => "TimestampTz",
+                s if s.starts_with("TIMESTAMP") => "Timestamp",
+                s if s.starts_with("INTERVAL YEAR") => "IntervalYm",
+                s if s.starts_with("INTERVAL DAY") => "IntervalDs",
+                other => panic!("unexpected type {other}"),
+            };
+            let got_ty = format!("{ty:?}");
+            assert!(
+                got_ty.starts_with(want_ty),
+                "{name}.{}: type {got_ty} vs {}",
+                w[2],
+                w[3]
+            );
+            if w[3] == "NVARCHAR2" || w[3] == "NCHAR" {
+                assert!(
+                    got_ty.contains("national: true"),
+                    "{name}.{} national",
+                    w[2]
+                );
+            }
+        }
+        if name == "T_ADDCOL" {
+            let nn = got.iter().find(|c| c.name == "NN").unwrap();
+            let nl = got.iter().find(|c| c.name == "NL").unwrap();
+            assert!(
+                nn.is_fast_add_default() && nl.is_fast_add_default(),
+                "fast-add property bit"
+            );
+            assert_eq!(nn.default_text.as_deref().map(str::trim), Some("7"));
+            assert_eq!(nl.default_text.as_deref().map(str::trim), Some("'dflt'"));
+            assert!(nn.not_null && !nl.not_null);
+        }
+        checked += 1;
+    }
+    assert_eq!(checked, 13, "all heap tables resolved");
+    // Cluster members: TAB$ must say clustered with bobj# = C_ODR and tab# 1/2;
+    // CLU$ must give C_ODR's segment (segments.txt: C_ODR|72539|72539|CLUSTER|ODR_ASSM|16|2179).
+    let c_odr = dict.objects.values().find(|o| o.name == "C_ODR").unwrap();
+    let clu = &dict.clusters[&c_odr.obj];
+    assert_eq!(
+        (clu.dataobj, clu.file, clu.block, clu.cols, clu.hashkeys),
+        (Some(72539), 16, 2179, 2, 0)
+    );
+    assert_eq!(dict.tablespace_name(clu.ts), Some("ODR_ASSM"));
+    for (n, tab) in [("T_CL_DEPT", 1u32), ("T_CL_EMP", 2)] {
+        let t = odr.iter().find(|t| t.name == n).unwrap();
+        assert!(t.is_clustered(), "{n}");
+        assert_eq!(t.bobj, Some(c_odr.obj), "{n} bobj#");
+        assert_eq!(t.tab, Some(tab), "{n} tab#");
+        assert_eq!(t.clucols, Some(2), "{n} clucols");
+    }
+    // The dictionary itself is self-consistent: OBJ$ has as many stored
+    // columns in COL$ as bootstrap$ declared.
+    for n in ["OBJ$", "TAB$", "COL$", "USER$", "TS$"] {
+        let boot = dict.catalog.by_name(n).unwrap();
+        let cols = &dict.cols[&boot.obj];
+        assert_eq!(
+            cols.len(),
+            boot.columns.len(),
+            "{n}: COL$ vs bootstrap$ column count"
+        );
+        for (a, b) in cols.iter().zip(&boot.columns) {
+            assert_eq!(a.name, b.name, "{n}: COL$ order vs bootstrap$");
+        }
+    }
+}
+
+/// End-to-end without any lab metadata: SYSTEM file → `Dictionary` →
+/// `TableDef` → segment walk → `read_heap` → `materialize` → compare every
+/// visible cell with Oracle's canonical text in `rows.psv` (joined on the
+/// `ID` column). This is the path the CLI will take on a customer's files.
+#[test]
+fn lab_end_to_end_dictionary_to_cells() {
+    use odr_core::dict::resolver::Dictionary;
+    use odr_core::dict::rows::read_heap;
+    use odr_core::dict::schema::{Cell, materialize};
+    use odr_core::dict::source::{BlockAddr, BlockSource, FileInfo, ImageSet};
+    use odr_core::value::Charsets;
+    use std::collections::HashMap;
+    let Some(g) = golden() else { return };
+    let mut src = ImageSet::new(ByteOrder::Little);
+    for (file, rel, name, scheme) in [
+        (12u32, None, "FREE_FREEPDB1_system01", RdbaScheme::Bigfile),
+        (16, Some(16u32), "odr_odr_assm01", RdbaScheme::Smallfile),
+        (17, Some(17), "odr_odr_mssm01", RdbaScheme::Smallfile),
+        (18, None, "odr_odr_big01", RdbaScheme::Bigfile),
+    ] {
+        src.add(
+            FileInfo {
+                file,
+                relative: rel,
+                block_size: BS,
+                scheme,
+                tablespace: None,
+            },
+            read_file(&g.join(format!("datafiles/{name}.dbf"))),
+        );
+    }
+    let cs = Charsets {
+        database: Charset::Al32Utf8,
+        national: Charset::Al16Utf16,
+    };
+    // truth[(table, id)][col] = canonical text (None = NULL)
+    let mut truth: HashMap<(String, String), HashMap<String, Option<String>>> = HashMap::new();
+    for l in std::fs::read_to_string(g.join("rows.psv")).unwrap().lines() {
+        let p: Vec<&str> = l.splitn(8, '|').collect();
+        if p.len() == 8 {
+            truth
+                .entry((p[0].to_owned(), p[1].to_owned()))
+                .or_default()
+                .insert(p[2].to_owned(), (p[4] != "NULL").then(|| p[7].to_owned()));
+        }
+    }
+    let dict = Dictionary::load(&src, 12).unwrap();
+    // ODR_BIG is bigfile: TAB$.FILE# = 1024 must map to absolute file 18.
+    // ODR_ASSM/ODR_MSSM: relative 16/17 = absolute 16/17 in this lab.
+    let abs_file = |t: &odr_core::dict::schema::TableDef| -> u32 {
+        match dict.tablespace_name(t.ts) {
+            Some("ODR_BIG") => 18,
+            _ => t.file,
+        }
+    };
+    let mut cells_checked = 0usize;
+    let mut tables = 0usize;
+    for t in dict.tables() {
+        if t.owner_name.as_deref() != Some("ODR") || t.is_clustered() {
+            continue;
+        }
+        let file = abs_file(&t);
+        let hdr = src
+            .block(BlockAddr {
+                file,
+                block: t.block,
+            })
+            .unwrap_or_else(|| panic!("{}: header {file}/{}", t.name, t.block));
+        let seg = walk_segment(&hdr, ByteOrder::Little, Rdba(0), |r| {
+            src.resolve(r, file).and_then(|a| src.block(a))
+        })
+        .unwrap();
+        assert_eq!(Some(seg.objd), t.dataobj, "{}: objd", t.name);
+        let rows = read_heap(&src, &seg, file, seg.objd);
+        let visible: Vec<_> = t.visible_columns();
+        let id_pos = visible.iter().position(|c| c.name == "ID").unwrap();
+        let mut n = 0;
+        for r in rows.rows.iter().map(|r| r.as_ref().unwrap()) {
+            let stored: Vec<Option<&[u8]>> = r.columns.iter().map(|c| c.as_deref()).collect();
+            let cells = materialize(&t, &stored, cs);
+            assert_eq!(cells.len(), visible.len(), "{}: cell count", t.name);
+            let id = cells[id_pos].canonical().unwrap();
+            let want = truth
+                .get(&(t.name.clone(), id.clone()))
+                .unwrap_or_else(|| panic!("{} id {id}: not in rows.psv", t.name));
+            for (c, cell) in visible.iter().zip(&cells) {
+                let Some(w) = want.get(&c.name) else {
+                    panic!("{}.{}: no truth", t.name, c.name)
+                };
+                let got = cell.canonical();
+                let ty = format!("{:?}", c.column_type());
+                // Compare where Oracle's TO_CHAR format is unambiguous (see
+                // lab_values_match_oracle_dump_byte_for_byte for the rules).
+                let comparable = ty.starts_with("Number")
+                    || ty.starts_with("Date")
+                    || ty.starts_with("Raw")
+                    || ty.starts_with("Varchar2")
+                    || ty.starts_with("Char");
+                if !comparable {
+                    continue;
+                }
+                match (w, got) {
+                    (None, None) => {}
+                    (None, Some(g)) => panic!(
+                        "{}.{} id {id}: Oracle NULL, ODR {g:?} ({cell:?}) — golden rule violated",
+                        t.name, c.name
+                    ),
+                    (Some(w), None) => {
+                        panic!("{}.{} id {id}: Oracle {w:?}, ODR NULL", t.name, c.name)
+                    }
+                    (Some(w), Some(g)) => {
+                        let mut w = w.trim_end().to_owned();
+                        if ty.starts_with("Date") {
+                            w = w.trim_start().to_owned();
+                        }
+                        if ty.starts_with("Number") {
+                            if w.contains('E') {
+                                continue;
+                            }
+                            if let Some(rest) = w.strip_prefix("-.") {
+                                w = format!("-0.{rest}");
+                            } else if w.starts_with('.') {
+                                w = format!("0{w}");
+                            }
+                        }
+                        if w.contains('\\') {
+                            continue; // UNISTR-escaped export
+                        }
+                        assert_eq!(g.trim_end(), w, "{}.{} id {id} ({cell:?})", t.name, c.name);
+                    }
+                }
+                if matches!(cell, Cell::Inferred { .. }) {
+                    assert_eq!(
+                        t.name, "T_ADDCOL",
+                        "only fast-added columns may be inferred"
+                    );
+                }
+                cells_checked += 1;
+            }
+            n += 1;
+        }
+        assert!(n > 0, "{}: no rows", t.name);
+        tables += 1;
+    }
+    eprintln!("end-to-end: {tables} tables, {cells_checked} cells compared");
+    assert_eq!(tables, 13);
+    assert!(cells_checked > 100_000);
 }

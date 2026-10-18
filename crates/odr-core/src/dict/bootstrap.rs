@@ -479,6 +479,11 @@ fn parse_columns(toks: &[Tok<'_>], start: usize) -> Result<(Vec<BootColumn>, usi
             Some(Tok::Quoted(q)) => (*q).to_owned(),
             _ => return Err("bad column list: expected a column name"),
         };
+        if name.is_empty() {
+            // `""` tokenises as an empty quoted identifier (fuzz finding
+            // 2026-10-18); Oracle never writes one.
+            return Err("bad column list: empty column name");
+        }
         // Table-level constraints are not columns; bootstrap DDL has none,
         // so a keyword here is a parse failure rather than something to skip.
         if matches!(

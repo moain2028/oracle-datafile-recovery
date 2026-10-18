@@ -4,8 +4,17 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 ### Added
 - `dict/schema.rs`: `ColumnDef`/`TableDef`/`Cell {Verified, Inferred, Unknown}` + `materialize` (fast `ADD COLUMN … DEFAULT` rule: absent column ⇒ Inferred(DEFAULT$)/Unknown, never NULL); exact `encode_decimal` for DEFAULT$ literals.
 - `dict/rows.rs`: `read_heap` / `read_cluster` over any `BlockSource` (chained/migrated prefetch, foreign-objd rejection, deleted rows skipped, `rowid_row` per LV-046); golden test `lab_row_readers_match_oracle_rowids` — all 15 lab tables match Oracle's ROWID sets exactly.
+- CLI (step h): `odr dict <files…> [--json]` (headers, SYSTEM detection, tables/columns, dictionary issues) and `odr extract <files…> --table OWNER.NAME --out dir/ [--charset]` writing `verified.csv` / `inferred.csv` (with `_inference`) / `rejected.csv` (with `_reason`) + `report.json` (SHA-256 of every input, segment, skipped blocks, counts). Refuses when the segment's data object id disagrees with the dictionary. Golden CLI tests: 13 tables, verified+inferred == Oracle COUNT(*), 0 rejected, T_ADDCOL layer semantics.
+- `CLU$` in the resolver (`Dictionary::clusters`, `cluster_of`); `odr extract` handles indexed-cluster members (T_CL_DEPT/T_CL_EMP == Oracle, NULL trailing key padded, Arabic names intact); hash clusters refused explicitly.
+- Fuzz targets `kcvfh`, `segment` (self-loop termination bound), `bootstrap_columns`; CI runs them.
+- `FileInfo::from_header` + tablespace-scoped relative-file resolution (LV-055).
+- `dict/resolver.rs` (step f): `Dictionary::load(src, system_file)` — kcvfh → root → bootstrap$ → OBJ$ / TAB$ / COL$ (C_OBJ#) / USER$ / TS$, every column located by name in the file's own bootstrap DDL; `tables() -> Vec<TableDef>`, `table(owner, name)`, `issues` (dropped rows, duplicates, skipped blocks). Golden: 71,849 OBJ$ rows, 2,559 TAB$, 11,317 tables with COL$, 155 users, 10 tablespaces, 6 issues (2 malformed/chained dictionary rows reported, not guessed).
+- Golden `lab_dictionary_resolves_odr_tables_like_oracle` (obj#, dataobj#, tablespace, segment header, every column's name/segcol#/type/nullability/hidden, DEFAULT$ + fast-add bit, cluster bobj#/tab#/clucols vs `dba_*`) and `lab_end_to_end_dictionary_to_cells` (SYSTEM file → 13 tables → 131,536 cells == Oracle, no lab metadata used).
 - Golden test `lab_values_match_oracle_dump_byte_for_byte` (step g): 141,581 stored values of 13 heap tables compared byte-for-byte with Oracle `DUMP`, 131,524 canonical texts with `TO_CHAR`, plus the fast-ADD-COLUMN rule on real T_ADDCOL rows.
 ### Fixed
+- Fuzz findings: extent maps claiming > 2^26 blocks are refused by the parser; empty quoted column names in bootstrap DDL are rejected.
+- SYSTEM detection no longer requires `kcvfhfno == 1` (PDB SYSTEM is file 12); proven by bootstrap$ rows instead (LV-053).
+- `LONG` dictionary columns (`COL$.DEFAULT$`) read from the row's last stored column with the exact-length rule (LV-054).
 - `tools/gen_charsets.py --check` compares bytes (Windows CI false "stale").
 - Fast ADD COLUMN: bit-vector indexes nullable fast-added columns only; set bit ⇒ explicit NULL even when trailing-absent (LV-050).
 - `NUMBER` `80 02` (1E-130) decodes instead of being rejected (LV-051).

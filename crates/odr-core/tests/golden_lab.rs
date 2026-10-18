@@ -16,7 +16,12 @@
     clippy::panic,
     clippy::too_many_lines,
     clippy::items_after_statements,
-    clippy::assert_is_empty
+    clippy::assert_is_empty,
+    clippy::type_complexity,
+    clippy::semicolon_if_nothing_returned,
+    clippy::many_single_char_names,
+    clippy::similar_names,
+    clippy::cognitive_complexity
 )]
 
 use odr_core::ByteOrder;
@@ -470,4 +475,336 @@ fn lab_row_readers_match_oracle_rowids() {
         checked += 1;
     }
     assert!(checked >= 14, "checked {checked}");
+}
+
+/// Step g (plan 2026-10-18 §5): **every stored value of every heap table**
+/// must equal, byte for byte, what Oracle's own `DUMP(col, 1016)` printed
+/// into `rows.psv` (141,613 truth values). Columns are matched by
+/// `segment_column_id` from `meta/columns.txt`, rows by ROWID. Then the
+/// canonical text of NUMBER / DATE / CHAR / VARCHAR2 / RAW values is compared
+/// with Oracle's `TO_CHAR` output, and `T_ADDCOL` proves the fast-ADD-COLUMN
+/// rule: an absent column becomes `Inferred(DEFAULT$)`, never a NULL.
+#[test]
+fn lab_values_match_oracle_dump_byte_for_byte() {
+    use odr_core::dict::rows::read_heap;
+    use odr_core::dict::schema::{Cell, ColumnDef, TableDef, materialize};
+    use odr_core::dict::source::{BlockSource, FileInfo, ImageSet};
+    use odr_core::value::{Charsets, ColumnType, decode_value};
+    use std::collections::{BTreeMap, HashMap};
+    let Some(g) = golden() else { return };
+    let mut src = ImageSet::new(ByteOrder::Little);
+    for (file, rel, name, scheme) in [
+        (16u32, Some(16u32), "odr_odr_assm01", RdbaScheme::Smallfile),
+        (17, Some(17), "odr_odr_mssm01", RdbaScheme::Smallfile),
+        (18, None, "odr_odr_big01", RdbaScheme::Bigfile),
+    ] {
+        src.add(
+            FileInfo {
+                file,
+                relative: rel,
+                block_size: BS,
+                scheme,
+            },
+            read_file(&g.join(format!("datafiles/{name}.dbf"))),
+        );
+    }
+    let cs = Charsets {
+        database: Charset::Al32Utf8,
+        national: Charset::Al16Utf16,
+    };
+    // columns.txt: TABLE|column_id|name|data_type|len|prec|scale|nullable|segcol|hidden|virtual
+    let mut cols: BTreeMap<String, Vec<(u32, String, String)>> = BTreeMap::new(); // (segcol, name, type)
+    for l in std::fs::read_to_string(g.join("meta/columns.txt"))
+        .unwrap()
+        .lines()
+    {
+        let p: Vec<&str> = l.split('|').collect();
+        if p.len() == 11 && !p[8].is_empty() && p[10] == "NO" {
+            cols.entry(p[0].to_owned()).or_default().push((
+                p[8].parse().unwrap(),
+                p[2].to_owned(),
+                p[3].to_owned(),
+            ));
+        }
+    }
+    // rows.psv: TABLE|ID|COL|ROWID|Typ= Len=|CharacterSet|hex,bytes|canonical
+    // truth[(table, rowid)][col] = (bytes or None, canonical text)
+    let mut truth: HashMap<(String, String), HashMap<String, (Option<Vec<u8>>, String)>> =
+        HashMap::new();
+    for l in std::fs::read_to_string(g.join("rows.psv")).unwrap().lines() {
+        let p: Vec<&str> = l.splitn(8, '|').collect();
+        if p.len() != 8 {
+            continue;
+        }
+        let bytes = if p[4] == "NULL" {
+            None
+        } else {
+            Some(
+                p[6].split(',')
+                    .filter(|h| !h.is_empty())
+                    .map(|h| u8::from_str_radix(h, 16).unwrap())
+                    .collect::<Vec<u8>>(),
+            )
+        };
+        truth
+            .entry((p[0].to_owned(), p[3].to_owned()))
+            .or_default()
+            .insert(p[2].to_owned(), (bytes, p[7].to_owned()));
+    }
+    // ROWID -> (file, block, row) from rowids.psv (avoids re-implementing base64 rowids here).
+    let mut rowid_of: HashMap<(String, u32, u32, u16), String> = HashMap::new();
+    for l in std::fs::read_to_string(g.join("meta/rowids.psv"))
+        .unwrap()
+        .lines()
+    {
+        let p: Vec<&str> = l.split('|').collect();
+        if p.len() == 6 {
+            let rel: u32 = p[3].parse().unwrap();
+            let key = (
+                p[0].to_owned(),
+                if rel == 0 { 1024 } else { rel },
+                p[4].parse().unwrap(),
+                p[5].parse().unwrap(),
+            );
+            rowid_of.insert(key, String::new()); // filled below from rows.psv rowid strings
+        }
+    }
+    // rows.psv carries the textual ROWID; rowids.psv the decoded one. Join them
+    // through the ID column (both files list ID per row).
+    let mut id_to_rowid: HashMap<(String, String), String> = HashMap::new();
+    for ((t, rid), colmap) in &truth {
+        if let Some((_, id_text)) = colmap.get("ID") {
+            id_to_rowid.insert((t.clone(), id_text.clone()), rid.clone());
+        }
+    }
+    for l in std::fs::read_to_string(g.join("meta/rowids.psv"))
+        .unwrap()
+        .lines()
+    {
+        let p: Vec<&str> = l.split('|').collect();
+        if p.len() == 6 {
+            let rel: u32 = p[3].parse().unwrap();
+            let key = (
+                p[0].to_owned(),
+                if rel == 0 { 1024 } else { rel },
+                p[4].parse().unwrap(),
+                p[5].parse().unwrap(),
+            );
+            if let Some(r) = id_to_rowid.get(&(p[0].to_owned(), p[1].to_owned())) {
+                rowid_of.insert(key, r.clone());
+            }
+        }
+    }
+
+    let segs = std::fs::read_to_string(g.join("meta/segments.txt")).unwrap();
+    let mut values_checked = 0usize;
+    let mut canonical_checked = 0usize;
+    let mut tables_checked = 0usize;
+    for line in segs.lines() {
+        let p: Vec<&str> = line.split('|').collect();
+        if p.len() < 7 || p[3] != "TABLE" {
+            continue;
+        }
+        let (name, dataobj, file, hb): (&str, u32, u32, u32) = (
+            p[0],
+            p[2].parse().unwrap(),
+            p[5].parse().unwrap(),
+            p[6].parse().unwrap(),
+        );
+        let Some(tcols) = cols.get(name) else {
+            continue;
+        };
+        let mut tcols = tcols.clone();
+        tcols.sort_by_key(|c| c.0);
+        let scheme = src.scheme(file).unwrap();
+        let hdr = src
+            .block(odr_core::dict::source::BlockAddr { file, block: hb })
+            .unwrap();
+        let seg = walk_segment(&hdr, ByteOrder::Little, Rdba(0), |r| {
+            let a = src.resolve(r, file)?;
+            src.block(a)
+        })
+        .unwrap();
+        let got = read_heap(&src, &seg, file, dataobj);
+        let mut rows_seen = 0usize;
+        for r in got.rows.iter().map(|r| r.as_ref().unwrap()) {
+            let (f, b) = Rdba(r.provenance.rdba).split(scheme);
+            let key = (name.to_owned(), f.unwrap_or(1024), b, r.rowid_row);
+            let rid = rowid_of
+                .get(&key)
+                .unwrap_or_else(|| panic!("{name}: no rowid for {key:?}"));
+            let want = truth.get(&(name.to_owned(), rid.clone())).unwrap();
+            rows_seen += 1;
+            for (i, (segcol, cname, dtype)) in tcols.iter().enumerate() {
+                assert_eq!(
+                    usize::try_from(*segcol).unwrap(),
+                    i + 1,
+                    "{name}: segcol gap"
+                );
+                let got_bytes: Option<&[u8]> = r.columns.get(i).and_then(|c| c.as_deref());
+                let Some((want_bytes, want_text)) = want.get(cname) else {
+                    // hidden SYS_NC columns are not in rows.psv
+                    assert!(
+                        cname.starts_with("SYS_NC"),
+                        "{name}.{cname}: no truth value"
+                    );
+                    continue;
+                };
+                if name == "T_ADDCOL" && (cname == "NN" || cname == "NL") {
+                    continue; // fast-added: checked through `materialize` below
+                }
+                assert_eq!(
+                    got_bytes,
+                    want_bytes.as_deref(),
+                    "{name}.{cname} rowid {rid}: stored bytes differ"
+                );
+                values_checked += 1;
+                // Canonical text where Oracle's TO_CHAR format is unambiguous.
+                let ty = match dtype.as_str() {
+                    "NUMBER" => ColumnType::Number,
+                    "DATE" => ColumnType::Date,
+                    "VARCHAR2" => ColumnType::Varchar2 { national: false },
+                    "CHAR" => ColumnType::Char { national: false },
+                    "NVARCHAR2" => ColumnType::Varchar2 { national: true },
+                    "NCHAR" => ColumnType::Char { national: true },
+                    "RAW" => ColumnType::Raw,
+                    _ => continue,
+                };
+                let v = decode_value(got_bytes, ty, cs);
+                let got_text = v.canonical().map(|c| match dtype.as_str() {
+                    "CHAR" | "NCHAR" | "VARCHAR2" | "NVARCHAR2" => c.trim_end().to_owned(),
+                    _ => c.into_owned(),
+                });
+                let want_norm = match dtype.as_str() {
+                    // DUMP export prints DATE as " YYYY-MM-DD HH24:MI:SS" (leading space).
+                    "DATE" => want_text.trim_start().to_owned(),
+                    // Oracle TO_CHAR switches to scientific notation for extreme
+                    // magnitudes (1E-130, 1E+125); ODR prints exact decimals. Bytes
+                    // were already compared above.
+                    "NUMBER" if want_text.contains('E') => continue,
+                    // Oracle TO_CHAR drops the leading zero (".01", "-.5"); ODR keeps it.
+                    "NUMBER" if want_text.starts_with('.') => format!("0{want_text}"),
+                    "NUMBER" if want_text.starts_with("-.") => format!("-0{}", &want_text[1..]),
+                    // Arabic/UNISTR text was exported as \XXXX escapes; compare only pure-ASCII.
+                    "VARCHAR2" | "CHAR" | "NVARCHAR2" | "NCHAR" if want_text.contains('\\') => {
+                        continue;
+                    }
+                    _ => want_text.clone(),
+                };
+                if got_bytes.is_none() {
+                    assert_eq!(got_text, None, "{name}.{cname} rowid {rid}");
+                } else {
+                    assert_eq!(
+                        got_text.as_deref(),
+                        Some(want_norm.as_str()),
+                        "{name}.{cname} rowid {rid}: canonical text"
+                    );
+                }
+                canonical_checked += 1;
+            }
+            // Fast ADD COLUMN DEFAULT semantics (REQ-004.3 / LV-023) on real rows.
+            if name == "T_ADDCOL" {
+                let col = |c: u32,
+                           segcol: u32,
+                           intcol: u32,
+                           n: &str,
+                           t: u16,
+                           prop: u64,
+                           d: Option<&str>| ColumnDef {
+                    col: c,
+                    segcol,
+                    intcol,
+                    name: n.into(),
+                    type_code: t,
+                    length: 22,
+                    precision: None,
+                    scale: None,
+                    not_null: n == "NN" || n == "ID",
+                    charset_form: 1,
+                    property: prop,
+                    default_text: d.map(str::to_owned),
+                };
+                let table = TableDef {
+                    obj: 0,
+                    dataobj: Some(dataobj),
+                    owner: 0,
+                    owner_name: None,
+                    name: name.into(),
+                    ts: 0,
+                    file,
+                    block: hb,
+                    bobj: None,
+                    tab: None,
+                    clucols: None,
+                    flags: 0,
+                    property: 0,
+                    columns: vec![
+                        col(1, 1, 1, "ID", 2, 0, None),
+                        col(2, 2, 2, "V", 1, 0, None),
+                        col(3, 3, 3, "NN", 2, 0x4000_0000, Some("7")),
+                        col(0, 4, 4, "SYS_NC00004$", 23, 0x20, None),
+                        col(4, 5, 5, "NL", 1, 0x4000_0000, Some("'dflt'")),
+                    ],
+                };
+                let stored: Vec<Option<&[u8]>> = r.columns.iter().map(|c| c.as_deref()).collect();
+                let cells = materialize(&table, &stored, cs);
+                assert_eq!(cells.len(), 4, "{name}: visible cells");
+                let id_text = want["ID"].1.clone();
+                let nn = &cells[2];
+                let nl = &cells[3];
+                let (nn_want, nl_want) = (&want["NN"], &want["NL"]);
+                // NN (NOT NULL DEFAULT 7): Oracle shows 7 for old rows, 8 for the new row.
+                match nn {
+                    Cell::Verified(v) => assert_eq!(
+                        v.canonical().as_deref(),
+                        Some(nn_want.1.as_str()),
+                        "T_ADDCOL id {id_text} NN"
+                    ),
+                    Cell::Inferred { value, .. } => {
+                        assert_eq!(
+                            value.canonical().as_deref(),
+                            Some(nn_want.1.as_str()),
+                            "T_ADDCOL id {id_text} NN inferred"
+                        );
+                        assert!(nn_want.0.is_some(), "Oracle reports a value for NN");
+                    }
+                    Cell::Unknown { reason } => {
+                        panic!("T_ADDCOL id {id_text} NN unknown: {reason}")
+                    }
+                    other => panic!("T_ADDCOL id {id_text} NN: unexpected {other:?}"),
+                }
+                // NL (nullable DEFAULT 'dflt'): old rows => Inferred('dflt') (Oracle prints dflt),
+                // row 2 was updated to explicit NULL, row 6 inserted with explicit NULL.
+                match (nl, nl_want.0.is_some()) {
+                    (Cell::Verified(v), true) => assert_eq!(
+                        v.canonical().as_deref(),
+                        Some(nl_want.1.as_str()),
+                        "T_ADDCOL id {id_text} NL"
+                    ),
+                    (Cell::Verified(v), false) => {
+                        assert_eq!(v.canonical(), None, "T_ADDCOL id {id_text} NL must be NULL")
+                    }
+                    (Cell::Inferred { value, .. }, true) => assert_eq!(
+                        value.canonical().as_deref(),
+                        Some(nl_want.1.as_str()),
+                        "T_ADDCOL id {id_text} NL inferred"
+                    ),
+                    (Cell::Inferred { value, .. }, false) => panic!(
+                        "T_ADDCOL id {id_text}: NL inferred {value:?} but Oracle says NULL — golden rule violated"
+                    ),
+                    (Cell::Unknown { reason }, _) => {
+                        panic!("T_ADDCOL id {id_text} NL unknown: {reason}")
+                    }
+                    (other, _) => panic!("T_ADDCOL id {id_text} NL: unexpected {other:?}"),
+                }
+            }
+        }
+        assert!(rows_seen > 0, "{name}: no rows");
+        tables_checked += 1;
+    }
+    eprintln!(
+        "golden values: {tables_checked} tables, {values_checked} byte-exact, {canonical_checked} canonical"
+    );
+    assert!(tables_checked >= 12, "tables {tables_checked}");
+    assert!(values_checked >= 140_000, "values {values_checked}");
 }

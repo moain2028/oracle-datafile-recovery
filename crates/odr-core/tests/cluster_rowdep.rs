@@ -259,6 +259,7 @@ fn undocumented_cluster_combinations_are_unsupported_not_guessed() {
     ));
     let rd = PieceFormat {
         row_dependencies: true,
+        dscn_len: 6,
     };
     let m = member_row(0x6C, 0, &[b"X"]);
     assert!(matches!(
@@ -306,6 +307,7 @@ fn row_dependency_scn_is_skipped_and_reported() {
 fn rowdep_chained_piece_is_unsupported() {
     let rd = PieceFormat {
         row_dependencies: true,
+        dscn_len: 6,
     };
     // H F without L: would need nrid placement relative to dscn (undocumented).
     let p = [
@@ -360,7 +362,7 @@ proptest! {
     #[test]
     fn parse_piece_total(data in proptest::collection::vec(any::<u8>(), 0..300), big in any::<bool>(), rd in any::<bool>()) {
         let ord = if big { ByteOrder::Big } else { ByteOrder::Little };
-        if let Ok(p) = piece::parse_piece(&data, 0, 0, ord, PieceFormat { row_dependencies: rd }) {
+        if let Ok(p) = piece::parse_piece(&data, 0, 0, ord, PieceFormat { row_dependencies: rd, dscn_len: 6 }) {
             prop_assert!(p.len <= data.len());
             prop_assert!(p.cluster.is_none() || p.dscn.is_none());
         }
@@ -415,7 +417,10 @@ proptest! {
         big in any::<bool>(),
         wrap in any::<u16>(),
         base in any::<u32>(),
-        cols in proptest::collection::vec(proptest::collection::vec(any::<u8>(), 0..60), 0..8),
+        // Oracle never stores a zero-length column (empty string = NULL = 0xFF),
+        // so column bytes are 1..60 here; with that, the dscn width is
+        // settled unambiguously by the packing invariant (LV-052).
+        cols in proptest::collection::vec(proptest::collection::vec(any::<u8>(), 1..60), 1..8),
     ) {
         let ord = if big { ByteOrder::Big } else { ByteOrder::Little };
         let mut r = vec![0x2C, 0, cols.len() as u8];
@@ -423,7 +428,13 @@ proptest! {
         r.extend(u32b(base, ord));
         for c in &cols { r.extend(col(c)); }
         let b = build(ord, Layout::Mssm, kdbh_flag::ROW_DEPENDENCIES, &[vec![r.clone()]]);
-        let db = DataBlock::parse(&b, ord).unwrap();
+        let db = match DataBlock::parse(&b, ord) {
+            Ok(db) => db,
+            // A single row can still be ambiguous (e.g. a 7-byte read that
+            // also lands exactly on the heap end); rejection is the correct,
+            // non-guessing outcome — never a silently shifted row.
+            Err(e) => { let msg = format!("{e:?}"); prop_assert!(msg.contains("LV-052")); return Ok(()); }
+        };
         let p = db.row(0).unwrap().unwrap();
         prop_assert_eq!(p.len, r.len());
         prop_assert_eq!(p.dscn.unwrap().0, (u64::from(wrap) << 32) | u64::from(base));

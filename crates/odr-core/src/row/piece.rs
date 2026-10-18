@@ -45,8 +45,21 @@ const WHAT: &str = "row piece";
 /// Block-level facts that change the row-piece layout.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct PieceFormat {
-    /// Every row carries a 6-byte `dscn` after `cc` (`kdbh` flag `0x20`).
+    /// Every row carries a `dscn` after `cc` (`kdbh` flag `0x20`).
     pub row_dependencies: bool,
+    /// Width of that `dscn`: 6 bytes (wrap u16 + base u32) in the published
+    /// 11g dumps, **7 bytes** on 26ai (LV-052: `00 80 00 00 00 00 00` before
+    /// the first column in every `T_ROWDEP` row). [`super::DataBlock::parse`]
+    /// settles it per block from the row-packing invariant; never guessed.
+    pub dscn_len: u8,
+}
+
+impl PieceFormat {
+    /// Plain heap rows (no `dscn`).
+    pub const PLAIN: Self = Self {
+        row_dependencies: false,
+        dscn_len: 6,
+    };
 }
 
 /// Header fields between `cc` and the first column.
@@ -132,6 +145,9 @@ fn heap_header(c: &mut Cursor<'_>, fl: u8, fmt: PieceFormat) -> DecodeResult<Hea
         }
         let wrap = c.u16()?;
         let base = c.u32()?;
+        // Extra byte(s) beyond the 6-byte SCN (LV-052); their meaning is not
+        // established, so they are skipped, not interpreted.
+        c.skip(usize::from(fmt.dscn_len.saturating_sub(6)))?;
         Some(Scn::new(wrap, base))
     } else {
         None

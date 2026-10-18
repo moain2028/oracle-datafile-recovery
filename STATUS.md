@@ -4,7 +4,7 @@ updated: 2026-10-15
 # الحالة الآن
 ## قيد العمل (سطر لكل وكيل — حدّثه بنفسك)
 - **Lead (2026-10-18):** **المختبر يعمل داخل بيئة الوكيل** (Docker + Oracle 26ai Free) — المجموعة الذهبية الأولى موجودة (141,613 قيمة حقيقة). اكتشاف حرج: `0xFE` بترتيب الملف (LV-009 مدحوض ومُصحَّح). L-6b.2: extent maps + BlockSource + أعمدة bootstrap ✅. التالي: schema/Cell + قارئ heap/cluster + `Dictionary::load` + `odr dict`. PR #10 (Astra) = تعديلات B1–B4. Issue #8 = CI يحتاج توكن بصلاحية `workflow`.
-- Lead (2026-10-18) — L-1..L-4b ✅ · L-6a bootstrap$ ✅ · **L-6b.1 `kcvfh` ✅ · L-6b.2 خرائط extents + `BlockSource` ✅ (#17) · L-6b.3 `schema.rs` + `rows.rs` ✅ (قرّاء heap/cluster يطابقون ROWIDs أوراكل في 15 جدولاً؛ إصلاحات LV-047..049)** · التالي L-6b.4: `dict/resolver.rs` (`Dictionary::load`) ثم `golden_values.rs` ثم CLI (الخطة التفصيلية في `docs/handover/2026-10-18_handover.md`)
+- Lead (2026-10-18) — L-1..L-4b ✅ · L-6a bootstrap$ ✅ · **L-6b.1 `kcvfh` ✅ · L-6b.2 خرائط extents + `BlockSource` ✅ (#17) · L-6b.3 `schema.rs` + `rows.rs` ✅ (15 جدولاً تطابق ROWIDs) · **خطوة g ✅: 141,581 قيمة بايت-ببايت = أوراكل، LV-050..052 مُصلَحة** · التالي L-6b.4: `dict/resolver.rs` (`Dictionary::load`) ثم `golden_values.rs` ثم CLI (الخطة التفصيلية في `docs/handover/2026-10-18_handover.md`)
 - Astra — S1a PR #10: مراجعة Lead = تعديلات مطلوبة (B1 فصل التخطيط عن الإزاحة، B2 bigfile، B3 أغلبية بدل veto، B4 عتبة على الكتل الصالحة) — `genspark_ai_developer`
 ## معطّل / ينتظر
 - [2026-10-15] إجابات مقابلة خبير يمن سوفت (docs/research/02) — تحدد الأولويات: الإصدارات، الترميز العربي، ASM، الفدية

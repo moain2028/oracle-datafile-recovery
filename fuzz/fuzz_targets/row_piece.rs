@@ -5,10 +5,15 @@ libfuzzer_sys::fuzz_target!(|data: &[u8]| {
     use odr_core::row::{PieceFormat, piece::parse_piece};
     for order in [odr_core::ByteOrder::Little, odr_core::ByteOrder::Big] {
         for row_dependencies in [false, true] {
-            let fmt = PieceFormat { row_dependencies };
-            if let Ok(p) = parse_piece(data, 0, 0, order, fmt) {
-                // Decoded length can never exceed the input.
-                assert!(p.len <= data.len());
+            for dscn_len in [6u8, 7, 8] {
+                let fmt = PieceFormat {
+                    row_dependencies,
+                    dscn_len,
+                };
+                if let Ok(p) = parse_piece(data, 0, 0, order, fmt) {
+                    // Decoded length can never exceed the input.
+                    assert!(p.len <= data.len());
+                }
             }
         }
     }

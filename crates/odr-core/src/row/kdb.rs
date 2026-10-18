@@ -123,6 +123,8 @@ pub struct DataBlock<'a> {
     pub kdbh: Kdbh,
     /// Table directory.
     pub tables: Vec<TableDir>,
+    /// Settled `dscn` width for ROWDEPENDENCIES blocks (LV-052).
+    pub dscn_len: u8,
 }
 
 impl<'a> DataBlock<'a> {
@@ -170,7 +172,7 @@ impl<'a> DataBlock<'a> {
             expected_first = u16::try_from(end).unwrap_or(u16::MAX);
             tables.push(td);
         }
-        Ok(Self {
+        let mut db = Self {
             block,
             order,
             ktb,
@@ -178,7 +180,16 @@ impl<'a> DataBlock<'a> {
             kdbh_off,
             kdbh,
             tables,
-        })
+            dscn_len: 6,
+        };
+        if db.kdbh.flag & kdbh_flag::ROW_DEPENDENCIES != 0 && db.kdbh.nrow > 0 {
+            db.dscn_len = db.settle_dscn_len().ok_or(DecodeError::malformed(
+                WHAT,
+                kdbh_off,
+                "ROWDEPENDENCIES block: dscn width cannot be settled (LV-052)",
+            ))?;
+        }
+        Ok(db)
     }
 
     /// Byte order of the block.
@@ -190,6 +201,51 @@ impl<'a> DataBlock<'a> {
     pub const fn piece_format(&self) -> PieceFormat {
         PieceFormat {
             row_dependencies: self.kdbh.flag & kdbh_flag::ROW_DEPENDENCIES != 0,
+            dscn_len: self.dscn_len,
+        }
+    }
+
+    /// Decide the `dscn` width of a ROWDEPENDENCIES block (LV-052) from the
+    /// row-packing invariant: rows never overlap, and the highest row ends
+    /// exactly at the heap end (rows are stacked downward from the tail).
+    /// An updated row may leave a hole below its old position (26ai
+    /// `T_ROWDEP` id 100), so interior rows may end *before* the next one but
+    /// never after it. Returns the single width in `6..=8` for which **all**
+    /// rows satisfy this; `None` if none or more than one does (then the
+    /// block is rejected rather than read with a guessed layout).
+    fn settle_dscn_len(&self) -> Option<u8> {
+        let heap_end = self.block.len().saturating_sub(TAIL_LEN);
+        let heap = self.block.get(..heap_end).unwrap_or_default();
+        let mut offs: Vec<usize> = (0..self.kdbh.nrow)
+            .filter_map(|i| match self.slot(i) {
+                Ok(Slot::Row(o)) => Some(o),
+                _ => None,
+            })
+            .collect();
+        offs.sort_unstable();
+        offs.dedup();
+        let mut fits = Vec::new();
+        for len in 6u8..=8 {
+            let fmt = PieceFormat {
+                row_dependencies: true,
+                dscn_len: len,
+            };
+            let ok = offs.iter().enumerate().all(|(k, &o)| {
+                let Ok(p) = parse_piece(heap, o, 0, self.order, fmt) else {
+                    return false;
+                };
+                match offs.get(k + 1) {
+                    Some(&next) => o + p.len <= next,
+                    None => o + p.len == heap_end,
+                }
+            });
+            if ok {
+                fits.push(len);
+            }
+        }
+        match fits.as_slice() {
+            [one] => Some(*one),
+            _ => None,
         }
     }
 

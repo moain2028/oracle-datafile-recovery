@@ -87,6 +87,10 @@ body = (
     + emit("ISO8859_1", "ISO-8859-1 (Oracle `WE8ISO8859P1`): identity.", latin1)
 )
 if "--check" in sys.argv:
-    sys.exit(0 if OUT.read_text() == body else "tables.rs is stale: run tools/gen_charsets.py")
-OUT.write_text(body)
+    # Byte-exact comparison: on Windows the default `read_text()` would decode
+    # with the locale code page and translate newlines, so the check failed
+    # there while passing on Linux (CI 2026-10-18).
+    current = OUT.read_bytes() if OUT.exists() else b""
+    sys.exit(0 if current == body.encode("utf-8") else "tables.rs is stale: run tools/gen_charsets.py")
+OUT.write_bytes(body.encode("utf-8"))
 print(f"wrote {OUT.relative_to(ROOT)}")

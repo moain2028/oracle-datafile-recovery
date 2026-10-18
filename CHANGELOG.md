@@ -4,7 +4,12 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 ### Added
 - `dict/schema.rs`: `ColumnDef`/`TableDef`/`Cell {Verified, Inferred, Unknown}` + `materialize` (fast `ADD COLUMN … DEFAULT` rule: absent column ⇒ Inferred(DEFAULT$)/Unknown, never NULL); exact `encode_decimal` for DEFAULT$ literals.
 - `dict/rows.rs`: `read_heap` / `read_cluster` over any `BlockSource` (chained/migrated prefetch, foreign-objd rejection, deleted rows skipped, `rowid_row` per LV-046); golden test `lab_row_readers_match_oracle_rowids` — all 15 lab tables match Oracle's ROWID sets exactly.
+- Golden test `lab_values_match_oracle_dump_byte_for_byte` (step g): 141,581 stored values of 13 heap tables compared byte-for-byte with Oracle `DUMP`, 131,524 canonical texts with `TO_CHAR`, plus the fast-ADD-COLUMN rule on real T_ADDCOL rows.
 ### Fixed
+- `tools/gen_charsets.py --check` compares bytes (Windows CI false "stale").
+- Fast ADD COLUMN: bit-vector indexes nullable fast-added columns only; set bit ⇒ explicit NULL even when trailing-absent (LV-050).
+- `NUMBER` `80 02` (1E-130) decodes instead of being rejected (LV-051).
+- ROWDEPENDENCIES `dscn` is 7 bytes on 26ai; width settled per block from the row-packing invariant, never guessed (LV-052).
 - `ktbbhict` is one byte (LV-047): 26ai writes 0x1F at 0x25, so the old u16 read rejected ~9.8k real blocks.
 - Empty formatted data blocks (`ntab=0,nrow=0,fsbo=14`) are well-formed (LV-048).
 - `nrid`/`hrid`/cluster `prev,next` are big-endian on every platform (LV-049) — chained and migrated rows now assemble on little-endian files.

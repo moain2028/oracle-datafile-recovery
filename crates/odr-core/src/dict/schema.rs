@@ -269,25 +269,34 @@ pub fn materialize(table: &TableDef, stored: &[Option<&[u8]>], cs: Charsets) -> 
                 && c.name.starts_with("SYS_NC")
         })
         .and_then(|(i, _)| stored.get(i).copied().flatten());
-    let mut fast_index = 0u32; // k-th fast-added column (bit position)
+    // LV-050 (26ai, T_ADDCOL real rows): the hidden bit-vector numbers only
+    // the **nullable** fast-added columns. A NOT NULL fast-added column is
+    // never materialised: rows written later store an explicit NULL byte
+    // for it (0xFF) and Oracle supplies DEFAULT$ at read time — so for such
+    // a column "stored NULL" also means "default". When the bit **is** set
+    // the column is an explicit NULL even if it is trailing-absent from the
+    // row (`UPDATE … SET NL = NULL` on an old row leaves cc = 4 with the
+    // bit-vector last) — otherwise ODR would print 'dflt' where Oracle
+    // prints NULL, the exact wrong-value the golden rule forbids.
+    let mut nullable_fast_index = 0u32;
     let mut out = Vec::new();
-    // Build a map segcol -> stored index
     for col in table.visible_columns() {
         let pos = stored_cols.iter().position(|c| c.intcol == col.intcol);
         let raw = pos.and_then(|i| stored.get(i).copied());
-        let stored_here = pos.is_some_and(|i| i < stored.len());
         let ty = col.column_type();
         if col.is_fast_add_default() {
-            let bit = fast_index;
-            fast_index = fast_index.saturating_add(1);
-            let explicitly_written = bitvec.is_some_and(|bv| bit_set(bv, bit));
+            let explicitly_written = if col.not_null {
+                false
+            } else {
+                let bit = nullable_fast_index;
+                nullable_fast_index = nullable_fast_index.saturating_add(1);
+                bitvec.is_some_and(|bv| bit_set(bv, bit))
+            };
             match raw {
                 Some(Some(b)) => out.push(Cell::Verified(decode_value(Some(b), ty, cs))),
-                Some(None) if stored_here && explicitly_written => {
-                    out.push(Cell::Verified(Value::Null));
-                }
+                _ if explicitly_written => out.push(Cell::Verified(Value::Null)),
                 _ => {
-                    // Absent (old row) or NULL without the "written" bit: default applies.
+                    // Absent (old row), or NULL without the "written" bit: default applies.
                     match col.default_text.as_deref().and_then(|d| default_literal(d, ty, cs)) {
                         Some(v) => out.push(Cell::Inferred {
                             value: v,

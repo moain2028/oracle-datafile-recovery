@@ -1,7 +1,8 @@
 //! Oracle `NUMBER` (internal type 2): exact decoding to a decimal string.
 //!
 //! Encoding (\[O2\], \[W4\]):
-//! * `[0x80]` is zero. `[0x00]` is −∞; `[0xFF, 0x65]` is +∞.
+//! * `[0x80]` is zero. `[0x00]` is −∞; `[0xFF, 0x65]` is +∞. `[0x80, m…]`
+//!   is a positive number with exponent −65 (1E-130 = `80 02`, LV-051).
 //! * Byte 0 holds sign and base-100 exponent. Positive: `e = b0 − 0xC1`;
 //!   negative: `e = 0x3E − b0`.
 //! * Then 1–20 mantissa bytes, each one base-100 digit. Positive digit
@@ -68,7 +69,9 @@ impl OraNumber {
             (0x80, []) => return Ok(Self::Zero),
             (0x00, []) => return Ok(Self::NegInfinity),
             (0xFF, [0x65]) => return Ok(Self::PosInfinity),
-            (0x80, _) => return Err(DecodeError::malformed(WHAT, 1, "zero with mantissa")),
+            // LV-051: `0x80` followed by a mantissa is **not** malformed —
+            // it is the smallest positive magnitude (exponent −65):
+            // Oracle 26ai stores 1E-130 as `80 02` (T_BIG/T_NUMBER golden).
             (_, []) => return Err(DecodeError::malformed(WHAT, 1, "missing mantissa")),
             _ => {}
         }
@@ -325,6 +328,11 @@ mod tests {
     fn known_vectors() {
         // Vectors from Oracle `SELECT DUMP(x) FROM dual` (documented in \[W4\]).
         assert_eq!(s(&[0x80]), "0");
+        // LV-051: 1E-130 as Oracle stores it.
+        assert_eq!(
+            s(&[0x80, 0x02]),
+            "0.0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001"
+        );
         assert_eq!(s(&[0xC1, 0x02]), "1");
         assert_eq!(s(&[0xC2, 0x02]), "100");
         assert_eq!(s(&[0xC2, 0x02, 0x02]), "101");

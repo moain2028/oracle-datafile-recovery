@@ -51,6 +51,10 @@ enum Cmd {
         /// Emit JSON instead of text.
         #[arg(long)]
         json: bool,
+        /// Identity for a file whose header (block 1) is destroyed:
+        /// `PATH=file:N,ts:N[,rfile:N],bs:N`. Repeatable. Recorded as assumed.
+        #[arg(long = "assume")]
+        assume: Vec<String>,
     },
     /// Extract one table into three layers: verified / inferred / rejected.
     Extract {
@@ -62,9 +66,14 @@ enum Cmd {
         /// Output directory (created).
         #[arg(long)]
         out: PathBuf,
-        /// Database character set name (default AL32UTF8).
+        /// Database character set name (overrides PROPS$).
         #[arg(long)]
         charset: Option<String>,
+        /// Identity for a file whose header (block 1) is destroyed:
+        /// `PATH=file:N,ts:N[,rfile:N],bs:N`. Repeatable. Rows from such a
+        /// file are never reported as verified.
+        #[arg(long = "assume")]
+        assume: Vec<String>,
     },
 }
 
@@ -86,13 +95,30 @@ fn run() -> Result<ExitCode> {
             endian,
             json,
         } => (file, block_size, endian, json),
-        Cmd::Dict { files, json } => return dict_cmd::dict(&files, json),
+        Cmd::Dict {
+            files,
+            json,
+            assume,
+        } => {
+            let a = assume
+                .iter()
+                .map(|s| dict_cmd::Assume::parse(s))
+                .collect::<Result<Vec<_>>>()?;
+            return dict_cmd::dict(&files, json, &a);
+        }
         Cmd::Extract {
             files,
             table,
             out,
             charset,
-        } => return dict_cmd::extract(&files, &table, &out, charset.as_deref()),
+            assume,
+        } => {
+            let a = assume
+                .iter()
+                .map(|s| dict_cmd::Assume::parse(s))
+                .collect::<Result<Vec<_>>>()?;
+            return dict_cmd::extract(&files, &table, &out, charset.as_deref(), &a);
+        }
     };
     if !BLOCK_SIZES.contains(&block_size) {
         bail!("invalid block size {block_size}; expected one of {BLOCK_SIZES:?}");

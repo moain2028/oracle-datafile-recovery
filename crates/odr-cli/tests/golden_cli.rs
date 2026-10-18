@@ -182,3 +182,214 @@ fn extract_refuses_unknown_table_and_missing_system() {
     assert_eq!(out.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&out.stderr).contains("no SYSTEM datafile"));
 }
+
+/// Extract `ODR.T_JOURNAL` from `[system, assm]`, return the output dir.
+fn extract_journal(
+    g: &std::path::Path,
+    assm: &std::path::Path,
+    out_dir: &std::path::Path,
+    extra: &[String],
+) -> std::process::Output {
+    Command::new(env!("CARGO_BIN_EXE_odr"))
+        .arg("extract")
+        .arg(g.join("datafiles/FREE_FREEPDB1_system01.dbf"))
+        .arg(assm)
+        .args(["--table", "ODR.T_JOURNAL", "--out"])
+        .arg(out_dir)
+        .args(extra)
+        .output()
+        .unwrap()
+}
+
+/// Data lines of a CSV (header dropped), as a set.
+fn csv_rows(p: &std::path::Path) -> std::collections::HashSet<String> {
+    std::fs::read_to_string(p)
+        .unwrap()
+        .lines()
+        .skip(1)
+        .map(str::to_owned)
+        .collect()
+}
+
+/// LV-059 — *precision of the verified layer is 1.0 under damage.*
+///
+/// Deterministic `odr-corrupt` copies of the ASSM file (bit rot, zeroed
+/// blocks, torn writes, scattered holes). Every line that ODR calls
+/// *verified* must be byte-identical to the clean extraction; damaged blocks
+/// may only lower recall (rows go to `rejected.csv` with the integrity
+/// reason) — never produce a wrong value with a green label.
+#[test]
+fn damaged_copies_never_yield_a_wrong_verified_cell() {
+    use odr_corrupt::{Op, Spec, apply};
+    let Some(g) = golden() else { return };
+    let tmp = std::env::temp_dir().join(format!("odr_cli_damage_{}", std::process::id()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    let clean_path = g.join("datafiles/odr_odr_assm01.dbf");
+    let clean_bytes = std::fs::read(&clean_path).unwrap();
+    let clean_out = tmp.join("clean");
+    assert!(
+        extract_journal(&g, &clean_path, &clean_out, &[])
+            .status
+            .success()
+    );
+    let truth = csv_rows(&clean_out.join("verified.csv"));
+    assert_eq!(truth.len(), 20000);
+
+    let cases: [(&str, Op, f64); 4] = [
+        ("zero_200", Op::Zero { count: 200 }, 0.95),
+        ("bitrot_400", Op::Bitrot { count: 400 }, 0.93),
+        ("holes_20_16", Op::Holes { count: 20, len: 16 }, 0.99),
+        ("torn_200", Op::Torn { count: 200 }, 0.98),
+    ];
+    for (name, op, min_recall) in cases {
+        let spec = Spec {
+            block_size: 8192,
+            seed: 7,
+            ops: vec![op],
+        };
+        let (bytes, manifest) = apply(&clean_bytes, &spec).unwrap();
+        assert!(!manifest.changes.is_empty(), "{name}: nothing damaged");
+        let dmg = tmp.join(format!("{name}.dbf"));
+        std::fs::write(&dmg, &bytes).unwrap();
+        let out_dir = tmp.join(name);
+        let out = extract_journal(&g, &dmg, &out_dir, &[]);
+        // Exit 2 (rejected rows present) or 0 (holes may miss every row) —
+        // never a hard failure.
+        assert!(
+            matches!(out.status.code(), Some(0 | 2)),
+            "{name}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let verified = csv_rows(&out_dir.join("verified.csv"));
+        let wrong: Vec<&String> = verified.iter().filter(|l| !truth.contains(*l)).collect();
+        assert!(wrong.is_empty(), "{name}: wrong verified rows {wrong:?}");
+        let inferred = csv_rows(&out_dir.join("inferred.csv"));
+        assert!(inferred.is_empty(), "{name}: unexpected inferred rows");
+        // Recall floor (measured 2026-10-18; see lab-verify LV-059).
+        #[allow(clippy::cast_precision_loss)]
+        let recall = verified.len() as f64 / truth.len() as f64;
+        assert!(recall >= min_recall, "{name}: recall {recall}");
+        // Every rejected row names its reason: the block failed integrity,
+        // or the row itself did not decode (a flipped length byte). Rows
+        // may contain quoted newlines, so count via the report, not lines.
+        let report: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(out_dir.join("report.json")).unwrap())
+                .unwrap();
+        let rejected = report["rows"]["rejected"].as_u64().unwrap() as usize;
+        // Rows in zeroed / truncated blocks cannot be read at all; the block
+        // is then listed in `skipped_blocks` with an `integrity:` key.
+        // KNOWN GAP (handover §5, next step): in a *torn* block a garbage
+        // flag byte can look like "deleted"/"continuation" and the row is
+        // skipped without a rejected line — recall, not precision.
+        assert!(verified.len() + rejected <= truth.len(), "{name}");
+        if name == "zero_200" {
+            let skipped = report["skipped_blocks"].as_object().unwrap();
+            assert!(skipped.contains_key("integrity: Zeroed"), "{skipped:?}");
+        }
+        let rej = std::fs::read_to_string(out_dir.join("rejected.csv")).unwrap();
+        assert_eq!(
+            rej.matches("block integrity: ").count() + rej.matches("row did not decode: ").count(),
+            rejected,
+            "{name}: every rejected row carries a reason"
+        );
+        // Input hash in the report is the damaged file, not the original.
+        let inputs = report["inputs"].as_array().unwrap();
+        assert!(
+            inputs
+                .iter()
+                .any(|i| i["sha256"] == manifest.output_sha256.as_str()),
+            "{name}: damaged input hash not recorded"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+/// LV-060 — *destroyed header ⇒ no identity ⇒ refuse; `--assume` ⇒ inferred.*
+///
+/// With blocks 0..=1 wiped the file cannot prove file#/tablespace. ODR must
+/// refuse rather than guess. When the operator supplies the identity, every
+/// row is at best *inferred* and labelled with the reason, and the values
+/// are the clean ones (the data blocks are intact).
+#[test]
+fn wiped_header_requires_assume_and_downgrades_to_inferred() {
+    use odr_corrupt::{Op, Spec, apply};
+    let Some(g) = golden() else { return };
+    let tmp = std::env::temp_dir().join(format!("odr_cli_wipe_{}", std::process::id()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    let clean_path = g.join("datafiles/odr_odr_assm01.dbf");
+    let clean_out = tmp.join("clean");
+    assert!(
+        extract_journal(&g, &clean_path, &clean_out, &[])
+            .status
+            .success()
+    );
+    let truth = csv_rows(&clean_out.join("verified.csv"));
+
+    let spec = Spec {
+        block_size: 8192,
+        seed: 7,
+        ops: vec![Op::WipeHeader],
+    };
+    let (bytes, _) = apply(&std::fs::read(&clean_path).unwrap(), &spec).unwrap();
+    let dmg = tmp.join("wipe-header.dbf");
+    std::fs::write(&dmg, &bytes).unwrap();
+
+    // 1. Without --assume: refuse.
+    let out = extract_journal(&g, &dmg, &tmp.join("refused"), &[]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("not an Oracle datafile header"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // 2. Wrong identity (file 17 is ODR_MSSM): the dictionary points
+    //    elsewhere, so the table's blocks are not in this file — no rows,
+    //    never rows from the wrong file called T_JOURNAL.
+    let wrong = format!("{}=file:17,ts:8,rfile:17,bs:8192", dmg.display());
+    let out = extract_journal(
+        &g,
+        &dmg,
+        &tmp.join("wrong"),
+        &["--assume".to_owned(), wrong],
+    );
+    assert_ne!(
+        out.status.code(),
+        Some(0),
+        "wrong identity must not succeed"
+    );
+
+    // 3. Correct identity: all 20000 rows, all inferred, values identical.
+    let right = format!("{}=file:16,ts:7,rfile:16,bs:8192", dmg.display());
+    let out_dir = tmp.join("assumed");
+    let out = extract_journal(&g, &dmg, &out_dir, &["--assume".to_owned(), right]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(csv_rows(&out_dir.join("verified.csv")).is_empty());
+    let inferred = csv_rows(&out_dir.join("inferred.csv"));
+    assert_eq!(inferred.len(), 20000);
+    let tag = ",file identity from --assume (header destroyed)";
+    for l in &inferred {
+        let Some(body) = l.strip_suffix(tag) else {
+            panic!("missing inference label: {l}");
+        };
+        assert!(
+            truth.contains(body),
+            "inferred value differs from clean: {body}"
+        );
+    }
+    let report: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(out_dir.join("report.json")).unwrap())
+            .unwrap();
+    let assumed: Vec<_> = report["inputs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|i| i["assumed"] == true)
+        .collect();
+    assert_eq!(assumed.len(), 1, "report must flag the assumed input");
+    let _ = std::fs::remove_dir_all(&tmp);
+}

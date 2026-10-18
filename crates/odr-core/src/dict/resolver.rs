@@ -506,6 +506,88 @@ impl Dictionary {
         self.clusters.get(&table.bobj?)
     }
 
+    /// Read `SYS.PROPS$` (`NAME`, `VALUE$`) through the resolved dictionary
+    /// — it is not a bootstrap table, so this needs `tables()` first. Returns
+    /// the properties that decoded exactly; anything else is reported in the
+    /// returned issues. `NLS_CHARACTERSET` / `NLS_NCHAR_CHARACTERSET` are
+    /// the ones ODR needs (LV-056: 26ai PROPS\$ is a 3-column heap in SYSTEM;
+    /// `VALUE$` may be NULL → `None`).
+    pub fn properties<S: BlockSource + ?Sized>(
+        &self,
+        src: &S,
+        system_file: u32,
+    ) -> (BTreeMap<String, Option<String>>, Vec<Issue>) {
+        let mut out = BTreeMap::new();
+        let mut issues = Vec::new();
+        let Some(t) = self.table("SYS", "PROPS$") else {
+            issues.push(Issue::MissingBootstrapObject(
+                "PROPS$ (via OBJ$/TAB$)".into(),
+            ));
+            return (out, issues);
+        };
+        let name_i = t.visible_columns().iter().position(|c| c.name == "NAME");
+        let value_i = t.visible_columns().iter().position(|c| c.name == "VALUE$");
+        let (Some(name_i), Some(value_i)) = (name_i, value_i) else {
+            issues.push(Issue::MissingBootstrapColumn {
+                table: "PROPS$".into(),
+                column: "NAME/VALUE$".into(),
+            });
+            return (out, issues);
+        };
+        // PROPS$ lives in SYSTEM: FILE# 1 (smallfile) or 1024 (bigfile).
+        let hdr = src.block(BlockAddr {
+            file: system_file,
+            block: t.block,
+        });
+        let Some(hdr) = hdr else {
+            issues.push(Issue::Segment {
+                table: "PROPS$".into(),
+                error: DecodeError::malformed("segment", 0, "header block unavailable"),
+            });
+            return (out, issues);
+        };
+        let seg = match walk_segment(&hdr, src.order(), Rdba(0), |r| {
+            src.resolve(r, system_file).and_then(|a| src.block(a))
+        }) {
+            Ok(s) => s,
+            Err(e) => {
+                issues.push(Issue::Segment {
+                    table: "PROPS$".into(),
+                    error: e,
+                });
+                return (out, issues);
+            }
+        };
+        if Some(seg.objd) != t.dataobj {
+            issues.push(Issue::Segment {
+                table: "PROPS$".into(),
+                error: DecodeError::malformed("segment", 0, "data object id differs from OBJ$"),
+            });
+            return (out, issues);
+        }
+        let rows = read_heap(src, &seg, system_file, seg.objd);
+        for r in rows.rows.iter().filter_map(|r| r.as_ref().ok()) {
+            let get = |i: usize| r.columns.get(i).and_then(|c| c.as_deref());
+            // VALUE$ is nullable (26ai: TDE_MASTER_KEY_ID, WORKLOAD_*_MODE
+            // are stored NULL) — a NULL property is a value, not an issue.
+            let value = get(value_i);
+            match (text(get(name_i)), value, value.map(|v| text(Some(v)))) {
+                (Some(n), None, _) => {
+                    out.insert(n, None);
+                }
+                (Some(n), Some(_), Some(Some(v))) => {
+                    out.insert(n, Some(v));
+                }
+                _ => issues.push(Issue::Row {
+                    table: "PROPS$".into(),
+                    provenance: r.provenance,
+                    reason: "NAME/VALUE$ undecodable".into(),
+                }),
+            }
+        }
+        (out, issues)
+    }
+
     /// Tablespace name of `ts#`.
     pub fn tablespace_name(&self, ts: u32) -> Option<&str> {
         self.tablespaces.get(&ts).map(String::as_str)
@@ -668,6 +750,7 @@ impl Dictionary {
                 super::rows::Skip::NotDataBlock(_) => "not a data block".to_owned(),
                 super::rows::Skip::ForeignObject(o) => format!("foreign object {o}"),
                 super::rows::Skip::Malformed(e) => format!("malformed: {e}"),
+                super::rows::Skip::Integrity(st) => format!("integrity: {st:?}"),
             };
             let n = by_reason.entry(key).or_default();
             *n = n.saturating_add(1);

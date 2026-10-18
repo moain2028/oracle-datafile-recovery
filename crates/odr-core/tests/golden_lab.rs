@@ -847,6 +847,9 @@ fn lab_dictionary_resolves_odr_tables_like_oracle() {
         eprintln!("  issue: {i:?}");
     }
     assert_eq!(dict.catalog.version.as_deref(), Some("8.0.0.0.0"));
+    // LV-057 (migrated cluster members) + LV-058 (deleted-and-overwritten
+    // row): the whole 26ai dictionary now reads with no issue at all.
+    assert!(dict.issues.is_empty(), "{:?}", dict.issues);
     assert!(dict.objects.len() > 1000, "OBJ$ rows");
     assert!(dict.users.values().any(|u| u == "SYS"));
     assert!(dict.users.values().any(|u| u == "ODR"));
@@ -987,6 +990,20 @@ fn lab_dictionary_resolves_odr_tables_like_oracle() {
         assert_eq!(t.tab, Some(tab), "{n} tab#");
         assert_eq!(t.clucols, Some(2), "{n} clucols");
     }
+    // PROPS$ (LV-056): NLS values equal meta/database.txt; NULL VALUE$ rows
+    // (TDE_MASTER_KEY_ID …) are values, not issues.
+    let (props, prop_issues) = dict.properties(&src, 12);
+    assert!(prop_issues.is_empty(), "{prop_issues:?}");
+    let db_txt = std::fs::read_to_string(g.join("meta/database.txt")).unwrap();
+    for key in ["NLS_CHARACTERSET", "NLS_NCHAR_CHARACTERSET"] {
+        let want = db_txt
+            .lines()
+            .find_map(|l| l.strip_prefix(&format!("nls|{key}|")))
+            .unwrap();
+        assert_eq!(props[key].as_deref(), Some(want), "{key}");
+    }
+    assert!(props.contains_key("TDE_MASTER_KEY_ID") && props["TDE_MASTER_KEY_ID"].is_none());
+    assert!(props.len() >= 20, "{}", props.len());
     // The dictionary itself is self-consistent: OBJ$ has as many stored
     // columns in COL$ as bootstrap$ declared.
     for n in ["OBJ$", "TAB$", "COL$", "USER$", "TS$"] {

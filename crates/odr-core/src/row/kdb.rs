@@ -299,6 +299,16 @@ impl<'a> DataBlock<'a> {
         })
     }
 
+    /// The raw flag byte of slot `i` without decoding the piece (`None` for
+    /// unused slots). Lets callers tell a deleted-and-overwritten row from a
+    /// genuinely malformed one (LV-058).
+    pub fn row_flag(&self, i: u16) -> Option<u8> {
+        match self.slot(i).ok()? {
+            Slot::Unused => None,
+            Slot::Row(off) => self.block.get(off).copied(),
+        }
+    }
+
     /// Decode the row piece in slot `i`. `None` for unused slots.
     ///
     /// # Errors

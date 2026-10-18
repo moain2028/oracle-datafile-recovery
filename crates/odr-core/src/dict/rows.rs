@@ -12,7 +12,7 @@
 
 use super::segment::SegmentBlocks;
 use super::source::{BlockAddr, BlockSource};
-use crate::block::{BlockHeader, Rdba};
+use crate::block::{BlockHeader, BlockStatus, Rdba, classify};
 use crate::bytes::ByteOrder;
 use crate::error::DecodeError;
 use crate::row::assemble::MAX_PIECES;
@@ -35,6 +35,8 @@ pub enum Skip {
     ForeignObject(u32),
     /// Block does not decode as a data block.
     Malformed(DecodeError),
+    /// Block is zeroed or truncated (LV-059).
+    Integrity(BlockStatus),
 }
 
 /// One row with its origin.
@@ -50,6 +52,10 @@ pub struct RawRow {
     pub columns: Vec<Option<Vec<u8>>>,
     /// Addresses of all pieces (head first) when the row was chained/migrated.
     pub pieces: Vec<(u32, u16)>,
+    /// Integrity of the block(s) the row was read from (LV-059). Anything
+    /// but [`BlockStatus::Valid`] means the bytes may be altered even though
+    /// they decode: the caller must not label such values *verified*.
+    pub block_status: BlockStatus,
 }
 
 /// Why a row could not be produced.
@@ -73,6 +79,19 @@ pub struct SegmentRows {
     pub skipped: Vec<(BlockAddr, Skip)>,
     /// Data blocks successfully read.
     pub data_blocks: usize,
+}
+
+/// The worse of two block statuses (`Valid` is best).
+fn worst(a: BlockStatus, b: BlockStatus) -> BlockStatus {
+    if a == BlockStatus::Valid { b } else { a }
+}
+
+/// Worst integrity status among the continuation blocks of a chain.
+fn chain_status(chain: &HashMap<u32, Vec<u8>>, order: ByteOrder) -> BlockStatus {
+    chain
+        .values()
+        .map(|b| classify(b, b.len(), order))
+        .fold(BlockStatus::Valid, worst)
 }
 
 /// Continuation blocks of one chained/migrated row, fetched up front so the
@@ -179,6 +198,16 @@ fn read_impl<S: BlockSource + ?Sized>(
             out.skipped.push((addr, Skip::Unavailable));
             continue;
         };
+        // LV-059: integrity first. A block whose checksum or tail check
+        // fails is still decoded (REQ-004.1: partial damage is data too)
+        // but every row from it is tagged so it cannot be reported as
+        // verified — 26ai bitrot lab: 3 of 20,000 rows decoded cleanly
+        // with one wrong byte inside a VARCHAR2.
+        let status = classify(&bytes, bytes.len(), order);
+        if matches!(status, BlockStatus::Zeroed | BlockStatus::Truncated) {
+            out.skipped.push((addr, Skip::Integrity(status)));
+            continue;
+        }
         let Ok(h) = BlockHeader::parse(&bytes, order) else {
             out.skipped.push((addr, Skip::Unavailable));
             continue;
@@ -210,6 +239,21 @@ fn read_impl<S: BlockSource + ?Sized>(
             let piece = match r {
                 Ok(p) => p,
                 Err(e) => {
+                    // LV-058: a row whose flag byte says *deleted* (`D`) may
+                    // have had its bytes partly reused by a newer row (26ai
+                    // OBJ$ block 5265: slot 22 deleted, slot 21 written 2
+                    // bytes above it). Oracle itself never reads it; it is
+                    // not an error of the block, so it is skipped silently.
+                    // Only in a block that passed integrity: in a torn
+                    // block the flag byte itself may be garbage, and the
+                    // row must then be *rejected*, never dropped (LV-059).
+                    if status == BlockStatus::Valid
+                        && db
+                            .row_flag(slot)
+                            .is_some_and(|f| f & crate::row::flag::D != 0)
+                    {
+                        continue;
+                    }
                     out.rows.push(Err((prov, RowError::Decode(e))));
                     continue;
                 }
@@ -236,6 +280,7 @@ fn read_impl<S: BlockSource + ?Sized>(
                         Ok(a) => out.rows.push(Ok(RawRow {
                             provenance: prov,
                             rowid_row: slot,
+                            block_status: worst(status, chain_status(&chain, order)),
                             columns: a.columns,
                             pieces: if a.pieces.len() > 1 {
                                 a.pieces
@@ -264,6 +309,7 @@ fn read_impl<S: BlockSource + ?Sized>(
                             Ok(cols) => out.rows.push(Ok(RawRow {
                                 provenance: prov,
                                 rowid_row,
+                                block_status: status,
                                 columns: cols.into_iter().map(|c| c.map(<[u8]>::to_vec)).collect(),
                                 pieces: Vec::new(),
                             })),

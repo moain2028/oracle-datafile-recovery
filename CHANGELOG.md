@@ -2,9 +2,14 @@
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 ## [Unreleased]
 ### Added
+- LV-059: every `RawRow` carries `block_status`; rows from blocks failing checksum/tail check are **rejected** (`block integrity: …`), zeroed/truncated blocks appear as `integrity:` skips. Measured with `odr-corrupt` on the 26ai golden ASSM file: precision(verified) = 1.0 on zero/bitrot/holes/torn (was 3 wrong verified cells), recall 0.958/0.937/1.0/0.986. Golden test `damaged_copies_never_yield_a_wrong_verified_cell`.
+- LV-060: `odr dict|extract --assume PATH=file:N,ts:N[,rfile:N],bs:N` for files whose header is destroyed; rows from such a file are at best *inferred* and labelled; `report.json` marks `assumed`. Golden test `wiped_header_requires_assume_and_downgrades_to_inferred`.
+- `odr-corrupt` is a workspace dependency (dev) so damage tests run in-process and deterministically.
 - `dict/schema.rs`: `ColumnDef`/`TableDef`/`Cell {Verified, Inferred, Unknown}` + `materialize` (fast `ADD COLUMN … DEFAULT` rule: absent column ⇒ Inferred(DEFAULT$)/Unknown, never NULL); exact `encode_decimal` for DEFAULT$ literals.
 - `dict/rows.rs`: `read_heap` / `read_cluster` over any `BlockSource` (chained/migrated prefetch, foreign-objd rejection, deleted rows skipped, `rowid_row` per LV-046); golden test `lab_row_readers_match_oracle_rowids` — all 15 lab tables match Oracle's ROWID sets exactly.
 - CLI (step h): `odr dict <files…> [--json]` (headers, SYSTEM detection, tables/columns, dictionary issues) and `odr extract <files…> --table OWNER.NAME --out dir/ [--charset]` writing `verified.csv` / `inferred.csv` (with `_inference`) / `rejected.csv` (with `_reason`) + `report.json` (SHA-256 of every input, segment, skipped blocks, counts). Refuses when the segment's data object id disagrees with the dictionary. Golden CLI tests: 13 tables, verified+inferred == Oracle COUNT(*), 0 rejected, T_ADDCOL layer semantics.
+- `Dictionary::properties` reads `SYS.PROPS$`; `odr extract` takes `NLS_CHARACTERSET`/`NLS_NCHAR_CHARACTERSET` from it (`--charset` overrides); `odr dict` prints them (LV-056).
+- Migrated cluster members (`F L` + `hrid`) decode (LV-057); deleted-and-overwritten rows are skipped not reported (LV-058) → the whole 26ai dictionary loads with **0 issues** (was 8); +1 table, +1 user recovered.
 - `CLU$` in the resolver (`Dictionary::clusters`, `cluster_of`); `odr extract` handles indexed-cluster members (T_CL_DEPT/T_CL_EMP == Oracle, NULL trailing key padded, Arabic names intact); hash clusters refused explicitly.
 - Fuzz targets `kcvfh`, `segment` (self-loop termination bound), `bootstrap_columns`; CI runs them.
 - `FileInfo::from_header` + tablespace-scoped relative-file resolution (LV-055).

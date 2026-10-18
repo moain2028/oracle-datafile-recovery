@@ -101,7 +101,15 @@ fn cluster_header(
             "both cluster-key and cluster-member flags set",
         ));
     }
-    if fl & (flag::H | flag::F | flag::L) != flag::H | flag::F | flag::L
+    // LV-057 (26ai SYSTEM, C_OBJ#/C_USER#): a *migrated* cluster member is
+    // stored with flags `F L` (no `H`) and, after `cc`, `cki` followed by a
+    // 6-byte `hrid` (big-endian) pointing at the head stub. Its columns are
+    // complete and its key row is the local `cki` one, so it is read like
+    // any member; only the stub (H without F/L) is skipped. Anything else
+    // (a member split across blocks: `P`/`N`, or `F` without `L`) stays
+    // unsupported rather than guessed.
+    let migrated_member = !is_key && fl & (flag::H | flag::F | flag::L) == flag::F | flag::L;
+    if !(migrated_member || fl & (flag::H | flag::F | flag::L) == flag::H | flag::F | flag::L)
         || fl & (flag::P | flag::N) != 0
     {
         return Err(DecodeError::Unsupported("chained cluster row piece"));
@@ -111,6 +119,7 @@ fn cluster_header(
             "cluster row piece with row dependencies",
         ));
     }
+    let mut head = None;
     let part = if is_key {
         let current = c.u16()?;
         let committed = c.u16()?;
@@ -123,12 +132,16 @@ fn cluster_header(
             next,
         }
     } else {
-        ClusterPart::Member { key_index: c.u8()? }
+        let key_index = c.u8()?;
+        if migrated_member {
+            head = Some(rid(c)?);
+        }
+        ClusterPart::Member { key_index }
     };
     Ok(Header {
         cluster: Some(part),
         next: None,
-        head: None,
+        head,
         dscn: None,
     })
 }

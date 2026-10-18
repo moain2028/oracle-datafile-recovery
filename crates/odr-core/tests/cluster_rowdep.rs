@@ -443,3 +443,26 @@ proptest! {
         prop_assert_eq!(got, want);
     }
 }
+
+/// LV-057: a migrated cluster member (`F L`, no `H`) carries `cki` then a
+/// big-endian `hrid`; it decodes like a normal member with `head` set.
+/// Real bytes from 26ai SYSTEM `C_USER#` block 34352 slot 17.
+#[test]
+fn migrated_cluster_member_decodes_with_hrid() {
+    let raw: &[u8] = &[
+        0x4C, 0x00, 0x03, 0x08, 0x00, 0x00, 0x00, 0xD1, 0x00, 0x02, 0x0A, b'_', b'N', b'E', b'X',
+        b'T', b'_', b'U', b'S', b'E', b'R', 0x01, 0x80, 0xFF,
+    ];
+    let p = piece::parse_piece(raw, 0, 0, ByteOrder::Little, PieceFormat::PLAIN).unwrap();
+    assert!(p.is_cluster_member() && !p.is_head());
+    assert_eq!(p.cluster, Some(ClusterPart::Member { key_index: 8 }));
+    assert_eq!(p.head, Some((0xD1, 2)));
+    assert_eq!(p.columns.len(), 3);
+    assert_eq!(p.columns[0], Some(&b"_NEXT_USER"[..]));
+    assert_eq!(p.columns[2], None);
+    assert_eq!(p.len, raw.len());
+    // A member split across blocks (P/N) is still refused, not guessed.
+    let mut split = raw.to_vec();
+    split[0] = 0x4C | 0x02;
+    assert!(piece::parse_piece(&split, 0, 0, ByteOrder::Little, PieceFormat::PLAIN).is_err());
+}

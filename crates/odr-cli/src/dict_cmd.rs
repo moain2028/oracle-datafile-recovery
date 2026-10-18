@@ -34,6 +34,58 @@ struct Opened {
     path: PathBuf,
     header: FileHeader,
     sha256: String,
+    /// Header came from `--assume`, not from block 1 (LV-060).
+    assumed: bool,
+}
+
+/// Operator-supplied identity for a file whose block 1 is destroyed
+/// (`--assume PATH=file:FILE#,ts:TS#[,rfile:N],bs:BLOCK_SIZE`). Nothing is
+/// inferred from the data blocks: the values are taken verbatim and written
+/// to the report as *assumed*, and every row from such a file is reported
+/// in the `inferred` layer at best (LV-060).
+#[derive(Debug, Clone)]
+pub(crate) struct Assume {
+    pub path: PathBuf,
+    pub file: u32,
+    pub ts: u32,
+    pub rfile: Option<u32>,
+    pub block_size: usize,
+}
+
+impl Assume {
+    pub(crate) fn parse(spec: &str) -> Result<Self> {
+        let (path, kv) = spec
+            .split_once('=')
+            .context("--assume wants PATH=file:N,ts:N[,rfile:N],bs:N")?;
+        let (mut file, mut ts, mut rfile, mut bs) = (None, None, None, None);
+        for part in kv.split(',') {
+            let (k, v) = part
+                .split_once(':')
+                .context("--assume: key:value expected")?;
+            let n: u32 = v
+                .trim()
+                .parse()
+                .with_context(|| format!("--assume {k}: {v}"))?;
+            match k.trim() {
+                "file" => file = Some(n),
+                "ts" => ts = Some(n),
+                "rfile" => rfile = Some(n),
+                "bs" => bs = Some(usize::try_from(n)?),
+                other => bail!("--assume: unknown key {other}"),
+            }
+        }
+        let block_size = bs.context("--assume: bs missing")?;
+        if !odr_core::block::BLOCK_SIZES.contains(&block_size) {
+            bail!("--assume: bs {block_size} is not an Oracle block size");
+        }
+        Ok(Self {
+            path: PathBuf::from(path),
+            file: file.context("--assume: file missing")?,
+            ts: ts.context("--assume: ts missing")?,
+            rfile,
+            block_size,
+        })
+    }
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -46,7 +98,7 @@ fn hex(bytes: &[u8]) -> String {
 /// Open every file, parse `kcvfh`, register in a `FileSet`. All files must
 /// share one byte order (one database). Returns the set and the per-file
 /// metadata; the SYSTEM file is whichever one yields `bootstrap$` rows.
-fn open_all(paths: &[PathBuf]) -> Result<(FileSet, Vec<Opened>)> {
+fn open_all(paths: &[PathBuf], assume: &[Assume]) -> Result<(FileSet, Vec<Opened>)> {
     if paths.is_empty() {
         bail!("no datafiles given");
     }
@@ -55,6 +107,41 @@ fn open_all(paths: &[PathBuf]) -> Result<(FileSet, Vec<Opened>)> {
     let mut evs = Vec::new();
     for p in paths {
         let mut ev = Evidence::open(p).with_context(|| format!("opening {}", p.display()))?;
+        if let Some(a) = assume.iter().find(|a| &a.path == p) {
+            // LV-060: block 1 is not consulted at all; the operator's word
+            // is recorded and the byte order is taken from the other files
+            // (or little-endian when this is the only one — reported).
+            let h = FileHeader {
+                order: order.unwrap_or(ByteOrder::Little),
+                compat: 0,
+                dbid: 0,
+                db_name: String::new(),
+                file_size_blocks: u64::try_from(a.block_size)
+                    .ok()
+                    .and_then(|bs| ev.len().checked_div(bs))
+                    .and_then(|n| u32::try_from(n).ok())
+                    .unwrap_or(0),
+                block_size: u32::try_from(a.block_size)?,
+                file_number: u16::try_from(a.file)?,
+                file_type: 0,
+                root_dba: Rdba(0),
+                creation_scn: odr_core::block::Scn(0),
+                status: 0,
+                checkpoint_count: 0,
+                tablespace: Some(a.ts),
+                tablespace_name: None,
+                relative_file: a.rfile,
+                checkpoint_scn: None,
+            };
+            opened.push(Opened {
+                path: p.clone(),
+                sha256: hex(ev.sha256()),
+                header: h,
+                assumed: true,
+            });
+            evs.push(ev);
+            continue;
+        }
         // kcvfh lives in block 1; the block size is inside it, so read the
         // largest possible block and let the parser bound itself.
         let mut buf = vec![0u8; 32 * 1024 * 2];
@@ -87,10 +174,17 @@ fn open_all(paths: &[PathBuf]) -> Result<(FileSet, Vec<Opened>)> {
             path: p.clone(),
             sha256: hex(ev.sha256()),
             header: h,
+            assumed: false,
         });
         evs.push(ev);
     }
     let order = order.context("no files")?;
+    // An assumed file registered before a real one took the default order.
+    for o in &mut opened {
+        if o.assumed {
+            o.header.order = order;
+        }
+    }
     let mut set = FileSet::new(order, 4096);
     for (o, ev) in opened.iter().zip(evs) {
         set.add(FileInfo::from_header(&o.header), ev);
@@ -122,10 +216,15 @@ fn load_dictionary(set: &FileSet, opened: &[Opened]) -> Result<(Dictionary, u32)
 
 /// `odr dict`.
 #[allow(clippy::too_many_lines)] // one report; the JSON and text shapes are kept side by side
-pub(crate) fn dict(files: &[PathBuf], json: bool) -> Result<std::process::ExitCode> {
-    let (set, opened) = open_all(files)?;
+pub(crate) fn dict(
+    files: &[PathBuf],
+    json: bool,
+    assume: &[Assume],
+) -> Result<std::process::ExitCode> {
+    let (set, opened) = open_all(files, assume)?;
     let (d, sysf) = load_dictionary(&set, &opened)?;
     let tables = d.tables();
+    let (props, _) = d.properties(&set, sysf);
     if json {
         let files: Vec<_> = opened
             .iter()
@@ -137,6 +236,7 @@ pub(crate) fn dict(files: &[PathBuf], json: bool) -> Result<std::process::ExitCo
                     "block_size": o.header.block_size, "blocks": o.header.file_size_blocks,
                     "order": format!("{:?}", o.header.order), "db_name": o.header.db_name,
                     "system": u32::from(o.header.file_number) == sysf,
+                    "assumed": o.assumed,
                 })
             })
             .collect();
@@ -160,6 +260,7 @@ pub(crate) fn dict(files: &[PathBuf], json: bool) -> Result<std::process::ExitCo
         let v = serde_json::json!({
             "files": files,
             "bootstrap_version": d.catalog.version,
+            "nls": {"NLS_CHARACTERSET": props.get("NLS_CHARACTERSET"), "NLS_NCHAR_CHARACTERSET": props.get("NLS_NCHAR_CHARACTERSET"), "NLS_RDBMS_VERSION": props.get("NLS_RDBMS_VERSION")},
             "objects": d.objects.len(), "users": d.users, "tablespaces": d.tablespaces,
             "tables": tabs, "issues": d.issues,
         });
@@ -186,6 +287,19 @@ pub(crate) fn dict(files: &[PathBuf], json: bool) -> Result<std::process::ExitCo
                 }
             );
         }
+        let prop = |k: &str| {
+            props
+                .get(k)
+                .and_then(Option::as_deref)
+                .unwrap_or("?")
+                .to_owned()
+        };
+        println!(
+            "nls: charset {} · nchar {} · rdbms {}",
+            prop("NLS_CHARACTERSET"),
+            prop("NLS_NCHAR_CHARACTERSET"),
+            prop("NLS_RDBMS_VERSION")
+        );
         println!(
             "dictionary: bootstrap {} · {} objects · {} tables · {} users · {} tablespaces · {} issues",
             d.catalog.version.clone().unwrap_or_default(),
@@ -254,7 +368,13 @@ enum Layer {
     Rejected(String),
 }
 
-fn classify(cells: &[Cell]) -> Layer {
+fn classify(cells: &[Cell], block_status: odr_core::block::BlockStatus) -> Layer {
+    // LV-059: a row from a block that fails its checksum / tail check can
+    // decode perfectly and still hold altered bytes (bitrot lab: 3 rows of
+    // 20,000 with one wrong character). It is never *verified*.
+    if block_status != odr_core::block::BlockStatus::Valid {
+        return Layer::Rejected(format!("block integrity: {block_status:?}"));
+    }
     let mut inferred = Vec::new();
     for (i, c) in (1usize..).zip(cells) {
         match c {
@@ -285,38 +405,46 @@ fn classify(cells: &[Cell]) -> Layer {
 }
 
 /// `odr extract`.
-#[allow(clippy::too_many_lines)]
+#[allow(clippy::too_many_lines, clippy::many_single_char_names)]
 pub(crate) fn extract(
     files: &[PathBuf],
     table: &str,
     out: &Path,
     charset: Option<&str>,
+    assume: &[Assume],
 ) -> Result<std::process::ExitCode> {
     let Some((owner, name)) = table.split_once('.') else {
         bail!("--table must be OWNER.NAME");
     };
-    let (set, opened) = open_all(files)?;
-    let (d, _sysf) = load_dictionary(&set, &opened)?;
+    let (set, opened) = open_all(files, assume)?;
+    let (d, sysf) = load_dictionary(&set, &opened)?;
     let Some(t) = d.table(&owner.to_ascii_uppercase(), &name.to_ascii_uppercase()) else {
         bail!("table {table} not found in the dictionary (try `odr dict` to list)");
     };
     if t.is_iot() {
         bail!("{table} is index-organised; not supported yet");
     }
-    // Character sets: the dictionary does not carry NLS_CHARACTERSET in a
-    // bootstrap table (it is in PROPS$), so it is given explicitly or
-    // defaults to AL32UTF8 — and every text cell is still checked for exact
-    // decodability; anything that is not exact goes to `rejected`.
+    // Character sets come from SYS.PROPS$ (LV-056); `--charset` overrides.
+    // Every text cell is still checked for exact decodability; anything that
+    // is not exact goes to `rejected`.
+    let (props, prop_issues) = d.properties(&set, sysf);
+    let from_props = |key: &str| -> Result<Option<Charset>> {
+        match props.get(key).and_then(Option::as_deref) {
+            None => Ok(None),
+            Some(n) => Charset::from_oracle_name(n)
+                .map(Some)
+                .with_context(|| format!("PROPS$ {key} = {n}: character set not supported by ODR")),
+        }
+    };
     let database = match charset {
         Some(n) => {
             Charset::from_oracle_name(n).with_context(|| format!("unknown character set {n}"))?
         }
-        None => Charset::Al32Utf8,
+        None => from_props("NLS_CHARACTERSET")?
+            .context("NLS_CHARACTERSET not readable from PROPS$; pass --charset explicitly")?,
     };
-    let cs = Charsets {
-        database,
-        national: Charset::Al16Utf16,
-    };
+    let national = from_props("NLS_NCHAR_CHARACTERSET")?.unwrap_or(Charset::Al16Utf16);
+    let cs = Charsets { database, national };
     // Which input file holds a segment: FILE# is relative within TS# (LV-055).
     let find_file = |ts: u32, rfile: u32| -> Option<u32> {
         opened
@@ -383,6 +511,9 @@ pub(crate) fn extract(
     writeln!(w_ver, "{header_line}")?;
     writeln!(w_inf, "{header_line},_inference")?;
     writeln!(w_rej, "{header_line},_reason")?;
+    let file_assumed = opened
+        .iter()
+        .any(|o| o.assumed && u32::from(o.header.file_number) == hdr_file);
     let (mut n_ver, mut n_inf, mut n_rej) = (0usize, 0usize, 0usize);
     let scheme = set
         .scheme(hdr_file)
@@ -412,7 +543,14 @@ pub(crate) fn extract(
                         line.push_str(&csv(&v));
                     }
                 }
-                match classify(&cells) {
+                let layer = match classify(&cells, r.block_status) {
+                    // LV-060: identity of the file was asserted, not read.
+                    Layer::Verified if file_assumed => {
+                        Layer::Inferred("file identity from --assume (header destroyed)".into())
+                    }
+                    l => l,
+                };
+                match layer {
                     Layer::Verified => {
                         writeln!(w_ver, "{line}")?;
                         n_ver = n_ver.saturating_add(1);
@@ -439,6 +577,7 @@ pub(crate) fn extract(
             Skip::NotDataBlock(t) => format!("not a data block (type {t:#04x})"),
             Skip::ForeignObject(o) => format!("foreign object {o}"),
             Skip::Malformed(e) => format!("malformed: {e}"),
+            Skip::Integrity(st) => format!("integrity: {st:?}"),
             _ => "other".to_owned(),
         };
         let n = skipped.entry(k).or_default();
@@ -452,8 +591,9 @@ pub(crate) fn extract(
         "rows": {"verified": n_ver, "inferred": n_inf, "rejected": n_rej},
         "skipped_blocks": skipped,
         "columns": visible.iter().map(|c| c.name.clone()).collect::<Vec<_>>(),
-        "database_charset": format!("{database:?}"),
-        "inputs": opened.iter().map(|o| serde_json::json!({"path": o.path.display().to_string(), "sha256": o.sha256, "file": o.header.file_number})).collect::<Vec<_>>(),
+        "database_charset": format!("{database:?}"), "national_charset": format!("{national:?}"),
+        "props": {"NLS_CHARACTERSET": props.get("NLS_CHARACTERSET"), "NLS_NCHAR_CHARACTERSET": props.get("NLS_NCHAR_CHARACTERSET"), "issues": prop_issues},
+        "inputs": opened.iter().map(|o| serde_json::json!({"path": o.path.display().to_string(), "sha256": o.sha256, "file": o.header.file_number, "assumed": o.assumed})).collect::<Vec<_>>(),
         "dictionary_issues": d.issues,
     });
     std::fs::write(

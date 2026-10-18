@@ -16,8 +16,12 @@
 //! * `hrid` is present on the destination piece of a migrated row: flag `F`
 //!   set, `H` clear — LV-010.
 //! * Column length byte: `0..=250` = length, `0xFE` = next two bytes hold the
-//!   length (big-endian on every platform, LV-009), `0xFF` = NULL;
-//!   `0xFB..=0xFD` never occur and are rejected.
+//!   length **in the file byte order** (LV-009 — *refuted* for the published
+//!   "always big-endian" claim: in a real 26ai little-endian datafile every
+//!   one of 21 `bootstrap$` rows with a > 250-byte `SQL_TEXT` ends exactly
+//!   where the next row starts only under little-endian; big-endian would
+//!   overrun the block), `0xFF` = NULL; `0xFB..=0xFD` never occur and are
+//!   rejected.
 //! * Trailing NULL columns are not stored: `cc` counts stored columns only.
 //! * Cluster pieces (`K`/`C` flags) carry their own header — see
 //!   [`super::cluster`]. Combinations without a published layout (chained
@@ -141,9 +145,7 @@ fn columns<'a>(c: &mut Cursor<'a>, buf: &'a [u8], cc: u8) -> DecodeResult<Vec<Op
             }
             0xFE => {
                 c.skip(1)?;
-                let hi = c.u8()?;
-                let lo = c.u8()?;
-                usize::from(u16::from_be_bytes([hi, lo]))
+                usize::from(c.u16()?)
             }
             l @ 0..=250 => {
                 c.skip(1)?;

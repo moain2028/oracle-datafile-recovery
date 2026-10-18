@@ -55,6 +55,12 @@ pub enum ColumnType {
     BinaryDouble,
     /// `RAW`.
     Raw,
+    /// `LONG` — text in the database character set, stored in-row like
+    /// `VARCHAR2` (at most one per table; the dictionary uses it for
+    /// `COL$.DEFAULT$` and `VIEW$.TEXT`).
+    Long,
+    /// `LONG RAW` — bytes, stored in-row like `RAW`.
+    LongRaw,
     /// `ROWID` / `UROWID`.
     Rowid,
     /// A type not decoded yet (LOB locators, `XMLType`, objects…); raw bytes are kept.
@@ -69,8 +75,10 @@ impl ColumnType {
         match type_code {
             1 => Self::Varchar2 { national },
             2 => Self::Number,
+            8 => Self::Long,
             12 => Self::Date,
             23 => Self::Raw,
+            24 => Self::LongRaw,
             69 => Self::Rowid,
             96 => Self::Char { national },
             100 => Self::BinaryFloat,
@@ -208,6 +216,7 @@ pub fn decode_value(raw: Option<&[u8]>, ty: ColumnType, cs: Charsets) -> Value {
         ColumnType::Varchar2 { national } | ColumnType::Char { national } => {
             text(if national { cs.national } else { cs.database })
         }
+        ColumnType::Long => text(cs.database),
         ColumnType::Number => OraNumber::decode(raw).map_or_else(invalid, Value::Number),
         ColumnType::Date => OraDate::decode(raw).map_or_else(invalid, Value::Date),
         ColumnType::Timestamp | ColumnType::TimestampLtz => {
@@ -220,7 +229,7 @@ pub fn decode_value(raw: Option<&[u8]>, ty: ColumnType, cs: Charsets) -> Value {
         ColumnType::IntervalDs => IntervalDs::decode(raw).map_or_else(invalid, Value::IntervalDs),
         ColumnType::BinaryFloat => decode_binary_float(raw).map_or_else(invalid, Value::Float),
         ColumnType::BinaryDouble => decode_binary_double(raw).map_or_else(invalid, Value::Double),
-        ColumnType::Raw => Value::Raw(raw.to_vec()),
+        ColumnType::Raw | ColumnType::LongRaw => Value::Raw(raw.to_vec()),
         ColumnType::Rowid => OraRowid::decode(raw).map_or_else(invalid, Value::Rowid),
         ColumnType::Unsupported(type_code) => Value::Unsupported {
             type_code,

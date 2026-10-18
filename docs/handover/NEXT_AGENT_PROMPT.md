@@ -5,7 +5,7 @@ You are the **Lead** (manager + coder) of `moain2026/oracle-datafile-recovery` �
 
 ## Read first (in this order)
 1. `AGENTS.md`, `README.md`, `STATUS.md`, `CHANGELOG.md`, `LESSONS.md`
-2. `docs/handover/2026-10-15_handover.md` — the current, corrected state (it supersedes any older memo).
+2. `docs/handover/2026-10-18_handover.md` (L-6b status + step-by-step plan a–h) then `docs/handover/2026-10-15_handover.md`.
 3. `docs/agents/LEAD.md`, `docs/agents/ASTRA.md`
 4. `docs/research/03_deep_research_round2_ar.md`, `docs/research/04_field_input_and_handover_ar.md`
 5. `docs/requirements/REQ-004.md`, `docs/design/lab-verify.md` (LV-001..034), `docs/brief/project_brief_ar.md`
@@ -29,7 +29,7 @@ You are the **Lead** (manager + coder) of `moain2026/oracle-datafile-recovery` �
 
 ## Next tasks (priority)
 1. Merge or confirm this PR; pull main; run all gates.
-2. Dictionary stage 2: read OBJ$/TAB$/COL$/USER$ using the bootstrap catalog (locations from `Catalog`), including CDB/PDB and column changes between 11g and 19c/26ai. Fast ADD COLUMN DEFAULT (`COL$.PROPERTY & 0x40000000`) must never output a false NULL; it's either the default or explicitly unknown.
+2. Dictionary stage 2 (L-6b.2, plan in the 2026-10-18 memo; `kcvfh` + `RdbaScheme` are done): extent maps → bootstrap$ rows → OBJ$/TAB$/COL$/USER$ using the bootstrap catalog (locations from `Catalog`), including CDB/PDB and column changes between 11g and 19c/26ai. Fast ADD COLUMN DEFAULT (`COL$.PROPERTY & 0x40000000`) must never output a false NULL; it's either the default or explicitly unknown.
 3. REQ-004: partial-block extraction, dummy names `OBJ_<objd>` / `COL_<n>` when the dictionary is missing, a forensic report, and no writes to the evidence.
 4. Bigfile support (the 26ai default): an rdba with no file bits.
 5. `odr extract` CLI → CSV/Parquet output, with a verified/inferred/rejected status per value.

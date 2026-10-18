@@ -78,13 +78,36 @@ impl From<u8> for BlockType {
     }
 }
 
-/// Relative data block address. For smallfile tablespaces: 10-bit relative
-/// file number and 22-bit block number. Bigfile tablespaces use all 32 bits as
-/// the block number — the caller must know which applies.
+/// How the 32 bits of an [`Rdba`] are split. The scheme is a property of the
+/// **tablespace**, not of the block, and nothing inside a data block says
+/// which one applies — the caller must know (from `kcvfh`, `TS$.FLAGS` or
+/// the operator) and must never derive a file number from a bigfile rdba
+/// (`lab-verify` LV-031).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum RdbaScheme {
+    /// Smallfile tablespace: 10-bit relative file number, 22-bit block number.
+    Smallfile,
+    /// Bigfile tablespace (one file; the default for `SYSTEM`/`SYSAUX`/`USERS`
+    /// since 23ai): all 32 bits are the block number.
+    Bigfile,
+}
+
+/// Relative data block address. See [`RdbaScheme`] for how to split it; the
+/// `file`/`block` accessors are the smallfile interpretation and exist for
+/// the many Oracle structures that are smallfile-only in practice (the
+/// `SYSTEM` tablespace of every release up to 21c, bootstrap `EXTENTS`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct Rdba(pub u32);
 
 impl Rdba {
+    /// Build a smallfile rdba from a relative file number and a block number.
+    /// Returns `None` if either does not fit its field (10 / 22 bits).
+    pub const fn smallfile(file: u32, block: u32) -> Option<Self> {
+        if file > 0x3FF || block > 0x003F_FFFF {
+            return None;
+        }
+        Some(Self((file << 22) | block))
+    }
     /// Relative file number (smallfile interpretation).
     pub const fn file(self) -> u32 {
         self.0 >> 22
@@ -92,6 +115,20 @@ impl Rdba {
     /// Block number (smallfile interpretation).
     pub const fn block(self) -> u32 {
         self.0 & 0x003F_FFFF
+    }
+    /// `(relative file, block)` under `scheme`. For bigfile the relative file
+    /// is `None`: a bigfile tablespace has exactly one file and the rdba does
+    /// not name it.
+    pub const fn split(self, scheme: RdbaScheme) -> (Option<u32>, u32) {
+        match scheme {
+            RdbaScheme::Smallfile => (Some(self.file()), self.block()),
+            RdbaScheme::Bigfile => (None, self.0),
+        }
+    }
+    /// Whether this is the null address (`0x00000000`), which Oracle uses for
+    /// "no block" in every pointer field.
+    pub const fn is_null(self) -> bool {
+        self.0 == 0
     }
 }
 
@@ -242,6 +279,15 @@ mod tests {
     fn rdba_split() {
         let r = Rdba((5 << 22) | 0x04D2);
         assert_eq!((r.file(), r.block()), (5, 1234));
+        assert_eq!(Rdba::smallfile(5, 1234), Some(r));
+        assert_eq!(Rdba::smallfile(1024, 0), None);
+        assert_eq!(Rdba::smallfile(0, 1 << 22), None);
+        assert_eq!(r.split(RdbaScheme::Smallfile), (Some(5), 1234));
+        // A bigfile rdba never yields a file number, even when the top bits
+        // happen to be non-zero (block numbers above 4M).
+        assert_eq!(r.split(RdbaScheme::Bigfile), (None, (5 << 22) | 0x04D2));
+        assert!(Rdba(0).is_null());
+        assert!(!r.is_null());
     }
 
     #[test]

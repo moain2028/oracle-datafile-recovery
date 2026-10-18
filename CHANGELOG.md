@@ -2,6 +2,12 @@
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 ## [Unreleased]
 ### Added
+- `dict/schema.rs`: `ColumnDef`/`TableDef`/`Cell {Verified, Inferred, Unknown}` + `materialize` (fast `ADD COLUMN … DEFAULT` rule: absent column ⇒ Inferred(DEFAULT$)/Unknown, never NULL); exact `encode_decimal` for DEFAULT$ literals.
+- `dict/rows.rs`: `read_heap` / `read_cluster` over any `BlockSource` (chained/migrated prefetch, foreign-objd rejection, deleted rows skipped, `rowid_row` per LV-046); golden test `lab_row_readers_match_oracle_rowids` — all 15 lab tables match Oracle's ROWID sets exactly.
+### Fixed
+- `ktbbhict` is one byte (LV-047): 26ai writes 0x1F at 0x25, so the old u16 read rejected ~9.8k real blocks.
+- Empty formatted data blocks (`ntab=0,nrow=0,fsbo=14`) are well-formed (LV-048).
+- `nrid`/`hrid`/cluster `prev,next` are big-endian on every platform (LV-049) — chained and migrated rows now assemble on little-endian files.
 - `odr-corrupt` crate + CLI: deterministic, manifest-backed corruption of datafile copies (bitrot, torn, zero, ransom, wipe-header, truncate, swap, holes, forge); property test that the manifest covers the exact diff.
 - `lab/`: Oracle Free 26ai golden-corpus lab (tablespaces ASSM/MSSM/bigfile, deterministic corpus incl. Arabic/cluster/rowdep/chained/fast-add-column, `DUMP 1016` truth export, block dumps, datafile copies after shutdown + dbv), `lab.sh`/`lab.ps1`, README.
 - Docs: handover memo + next-agent prompt, research 04 (field input, versions, DMP), REQ-004 (partial-damage extraction), Arabic project brief.

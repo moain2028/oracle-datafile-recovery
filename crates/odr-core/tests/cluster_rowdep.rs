@@ -55,8 +55,9 @@ fn key_row(curc: u16, comc: u16, rid: (u32, u16), keys: &[&[u8]], ord: ByteOrder
     v.extend(u16b(curc, ord));
     v.extend(u16b(comc, ord));
     for _ in 0..2 {
-        v.extend(u32b(rid.0, ord));
-        v.extend(u16b(rid.1, ord));
+        // prev/next rids are big-endian regardless of file order (LV-049).
+        v.extend(rid.0.to_be_bytes());
+        v.extend(rid.1.to_be_bytes());
     }
     for k in keys {
         v.extend(col(k));
@@ -80,7 +81,7 @@ fn build(ord: ByteOrder, layout: Layout, kflag: u8, tables: &[Vec<Vec<u8>>]) -> 
     b[1] = 0xA2;
     b[0x14] = 1;
     put32(&mut b, 0x18, 0x0001_611F, ord);
-    put16(&mut b, 0x24, itc, ord);
+    b[0x24] = itc as u8; // ktbbhict is one byte (LV-047)
     let kdbh = 0x2C + 24 * usize::from(itc) + if layout == Layout::Assm { 8 } else { 0 };
     let ntab = tables.len();
     let nrow: usize = tables.iter().map(Vec::len).sum();

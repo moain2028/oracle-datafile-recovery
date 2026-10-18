@@ -57,10 +57,9 @@ struct Piece {
 fn encode_piece(p: &Piece, ord: ByteOrder) -> Vec<u8> {
     let mut v = vec![p.flag, 0, p.cols.len() as u8];
     if let Some((dba, slot)) = p.nrid {
-        let mut r = [0u8; 6];
-        put32(&mut r, 0, dba, ord);
-        put16(&mut r, 4, slot, ord);
-        v.extend(r);
+        // nrid is big-endian regardless of file order (LV-049).
+        v.extend(dba.to_be_bytes());
+        v.extend(slot.to_be_bytes());
     }
     for c in &p.cols {
         v.extend(col(c.as_deref(), ord));
@@ -75,7 +74,7 @@ fn build(ord: ByteOrder, layout: Layout, objd: u32, itc: u16, pieces: &[Option<P
     b[1] = 0xA2;
     b[0x14] = 1;
     put32(&mut b, 0x18, objd, ord);
-    put16(&mut b, 0x24, itc, ord);
+    b[0x24] = itc as u8; // ktbbhict is one byte (LV-047)
     let kdbh = 0x2C + 24 * usize::from(itc) + if layout == Layout::Assm { 8 } else { 0 };
     let nrow = pieces.len() as u16;
     let fsbo = 14 + 4 + 2 * usize::from(nrow);
@@ -203,10 +202,30 @@ fn rejects_inconsistent_headers() {
     put16(&mut b, kdbh + 2, 7, ord); // nrow no longer matches fsbo
     assert!(DataBlock::parse(&b, ord).is_err());
     let mut b = good.clone();
-    put16(&mut b, 0x24, 0, ord); // zero ITLs
+    b[0x24] = 0; // zero ITLs
     assert!(DataBlock::parse(&b, ord).is_err());
+    // LV-047: the count is one byte; 0x25 must be ignored (26ai writes 0x1F).
     let mut b = good;
-    put16(&mut b, 0x24, 400, ord); // absurd ITL count
+    b[0x25] = 0x1F;
+    let db = DataBlock::parse(&b, ord).unwrap();
+    assert_eq!(db.ktb.itl_count, 2);
+}
+
+#[test]
+fn empty_formatted_block_has_no_rows() {
+    // LV-048: ntab = 0, nrow = 0, fsbo = 14 — a formatted but never-used block.
+    let ord = ByteOrder::Little;
+    let b = build(ord, Layout::Mssm, 1, 2, &[]);
+    let mut b = b;
+    let kdbh = 0x2C + 48;
+    b[kdbh + 1] = 0;
+    put16(&mut b, kdbh + 6, 14, ord); // fsbo = 14 + 4*0 + 2*0
+    let db = DataBlock::parse(&b, ord).unwrap();
+    assert_eq!(db.tables.len(), 0);
+    assert_eq!(db.rows().count(), 0);
+    // But ntab = 0 with rows present is still rejected.
+    put16(&mut b, kdbh + 2, 1, ord);
+    put16(&mut b, kdbh + 6, 16, ord);
     assert!(DataBlock::parse(&b, ord).is_err());
 }
 

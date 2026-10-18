@@ -58,3 +58,7 @@
 | LV-043 | `dict/segment.rs` | رأس MSSM يدرج الـ extent الأول **بعد** كتلة الرأس (dba_extents 128×128 ⇐ ktetb 129×127)؛ رأس ASSM يدرج الـ extent كاملاً (الرأس داخله) | **مختبر 26ai** T_MSSM، T_MIGRATED مقابل ASSM | ✅ 26ai |
 | LV-044 | `dict/kcvfh.rs` | `kcvfhrfn` = 1024 لملفات الـ bigfile؛ `kcvfhrdb` = 520 في **كل** ملفات الـ PDB (لا الملف 1 فقط) | **مختبر 26ai** `x$kcvfh` ×7 ملفات | ✅ 26ai |
 | LV-045 | `dict/bootstrap.rs` | 26ai: OBJ$ 37 عموداً، TAB$ 45، COL$ 37، USER$ 35 (مقابل 11g: 21/37/…) — يؤكد أن المخطط **يجب** أن يُقرأ من bootstrap$ | **مختبر 26ai** | ✅ 26ai |
+| LV-046 | `dict/rows.rs` | رقم الصف في ROWID لعضو cluster = الفهرس **داخل قسم `kdbt` الخاص بجدوله** (`slot - kdbt[tab].first`)، لا الفهرس الفيزيائي | **مختبر 26ai** T_CL_DEPT/T_CL_EMP مقابل `DBMS_ROWID.ROWID_ROW_NUMBER` | ✅ 26ai |
+| LV-047 | `row/ktb.rs` | `ktbbhict` **بايت واحد** @0x24؛ البايت 0x25 ليس جزءاً من العدّ (26ai يكتب 0x1F فيه؛ قراءة u16 تعطي 7938 وترفض الكتلة) | **مختبر 26ai** `itc: 2` في dump مقابل `02 1F` خام؛ 9,780 كتلة | ✅ 26ai |
+| LV-048 | `row/kdb.rs` | كتلة بيانات مهيّأة لم تُستخدم: `ntab=0, nrow=0, fsbo=14` — سليمة بلا صفوف، لا «malformed» | **مختبر 26ai** 321 كتلة في SYSTEM/ASSM | ✅ 26ai |
+| LV-049 | `row/piece.rs` | `nrid`/`hrid` و`prev/next` في مفتاح cluster **big-endian دائماً** بغض النظر عن ترتيب الملف (على عكس طول `0xFE`) | **مختبر 26ai** ملف LE: `04 00 05 A8 00 00` = 16/1448 slot 0؛ T_CHAINED/T_MIGRATED تُجمَّع كاملة | ✅ 26ai |

@@ -291,8 +291,11 @@ impl Kdbh {
         if h.flag & kdbh_flag::COMPRESSED != 0 && h.ntab >= 2 {
             return Err(DecodeError::Unsupported("compressed data block (9ir2)"));
         }
-        if h.ntab == 0 {
-            return bad("ntab is zero");
+        // LV-048: a freshly formatted, never-used data block has
+        // ntab = 0, nrow = 0, fsbo = 14 (seen 26ai: 321 blocks). It holds no
+        // rows but is well-formed; `rows()` yields nothing for it.
+        if h.ntab == 0 && (h.nrow != 0 || h.frre != 0xFFFF) {
+            return bad("ntab is zero but rows are present");
         }
         if usize::from(h.fsbo) != dir_end {
             return bad("fsbo != 14 + 4*ntab + 2*nrow");

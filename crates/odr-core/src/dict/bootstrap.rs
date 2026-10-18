@@ -91,6 +91,49 @@ pub struct BootObject {
     pub storage: Storage,
     /// `LINE#` of the defining row.
     pub line: i64,
+    /// Column list of a `CREATE TABLE` / `CREATE CLUSTER`, in DDL order
+    /// (= `COL#` order for bootstrap tables, which have no virtual, hidden
+    /// or dropped columns). Empty for indexes and rollback segments.
+    pub columns: Vec<BootColumn>,
+}
+
+/// One column of a bootstrap `CREATE TABLE` as written in `SQL_TEXT`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BootColumn {
+    /// Column name, upper-case / as quoted.
+    pub name: String,
+    /// Type name as written (`NUMBER`, `VARCHAR2`, `DATE`, `RAW`, `LONG`,
+    /// `TIMESTAMP`…), upper-case, without the length.
+    pub type_name: String,
+    /// Declared length / precision, if written (`VARCHAR2(30)` → 30).
+    pub length: Option<u32>,
+    /// `NOT NULL` present.
+    pub not_null: bool,
+}
+
+impl BootColumn {
+    /// The [`crate::value::ColumnType`] for this column, if the type name is
+    /// one ODR decodes. Bootstrap tables use only `NUMBER`, `VARCHAR2`,
+    /// `DATE`, `RAW`, `LONG`, `TIMESTAMP` (and `BLOB`/`CLOB` in 12c+ for a few
+    /// spare columns, which are reported unsupported).
+    pub fn column_type(&self) -> Option<crate::value::ColumnType> {
+        use crate::value::ColumnType as T;
+        Some(match self.type_name.as_str() {
+            "NUMBER" | "INTEGER" | "FLOAT" => T::Number,
+            "VARCHAR2" | "VARCHAR" => T::Varchar2 { national: false },
+            "NVARCHAR2" => T::Varchar2 { national: true },
+            "CHAR" => T::Char { national: false },
+            "NCHAR" => T::Char { national: true },
+            "DATE" => T::Date,
+            "RAW" => T::Raw,
+            "LONG" => T::Long,
+            "TIMESTAMP" => T::Timestamp,
+            "BINARY_FLOAT" => T::BinaryFloat,
+            "BINARY_DOUBLE" => T::BinaryDouble,
+            "ROWID" => T::Rowid,
+            _ => return None,
+        })
+    }
 }
 
 /// Why a `bootstrap$` row was not used.
@@ -337,9 +380,20 @@ fn parse_ddl(text: &str) -> Result<BootObject, &'static str> {
         _ => return Err("missing object name"),
     };
 
+    // Column list `( col type[(n)] [NOT NULL] [DEFAULT …] , … )` directly
+    // after the name for tables and clusters. It is parsed, not skipped,
+    // because the dictionary schema (which column of OBJ$ is NAME, how many
+    // columns TAB$ has) is taken from here, never hard-coded (LV-038).
+    let (columns, after_cols) = if matches!(kind, ObjectKind::Table | ObjectKind::Cluster)
+        && at(name_at + 1) == Some(&Tok::Punct('('))
+    {
+        parse_columns(&toks, name_at + 2)?
+    } else {
+        (Vec::new(), name_at + 1)
+    };
     let (mut objno, mut tabno, mut file, mut block) = (None, None, None, None);
     let mut cluster: Option<(String, Vec<String>)> = None;
-    let mut pos = name_at + 1;
+    let mut pos = after_cols;
     while pos < toks.len() {
         if kw(at(pos), "OBJNO") {
             once(&mut objno, uint(at(pos + 1)).ok_or("OBJNO without number")?)?;
@@ -405,7 +459,118 @@ fn parse_ddl(text: &str) -> Result<BootObject, &'static str> {
         name,
         storage,
         line: 0,
+        columns,
     })
+}
+
+/// Parse `col type[(n[,m])] [NOT NULL] [DEFAULT expr] {, …} )` starting at
+/// token `start` (just after the opening parenthesis). Returns the columns
+/// and the index of the token after the closing parenthesis. Everything
+/// between a column's type and the next top-level comma is skipped with
+/// parenthesis depth tracking, so `DEFAULT` expressions and constraints
+/// cannot derail the parse.
+fn parse_columns(toks: &[Tok<'_>], start: usize) -> Result<(Vec<BootColumn>, usize), &'static str> {
+    let at = |k: usize| toks.get(k);
+    let mut cols = Vec::new();
+    let mut pos = start;
+    loop {
+        let name = match at(pos) {
+            Some(Tok::Word(w)) => w.to_ascii_uppercase(),
+            Some(Tok::Quoted(q)) => (*q).to_owned(),
+            _ => return Err("bad column list: expected a column name"),
+        };
+        // Table-level constraints are not columns; bootstrap DDL has none,
+        // so a keyword here is a parse failure rather than something to skip.
+        if matches!(
+            name.as_str(),
+            "CONSTRAINT" | "PRIMARY" | "UNIQUE" | "FOREIGN" | "CHECK"
+        ) {
+            return Err("table-level constraint in bootstrap column list");
+        }
+        let Some(Tok::Word(ty)) = at(pos + 1) else {
+            return Err("bad column list: expected a type");
+        };
+        let mut type_name = ty.to_ascii_uppercase();
+        pos += 2;
+        // Multi-word types: `LONG RAW`, `TIMESTAMP WITH [LOCAL] TIME ZONE`,
+        // `INTERVAL YEAR …`, `DOUBLE PRECISION`, `CHARACTER VARYING`.
+        if type_name == "LONG" && kw(at(pos), "RAW") {
+            type_name = "LONG RAW".into();
+            pos += 1;
+        }
+        let mut length = None;
+        if at(pos) == Some(&Tok::Punct('(')) {
+            length = uint(at(pos + 1));
+            // skip to matching ')'
+            let mut depth = 0usize;
+            while let Some(t) = at(pos) {
+                match t {
+                    Tok::Punct('(') => depth += 1,
+                    Tok::Punct(')') => {
+                        depth -= 1;
+                        if depth == 0 {
+                            pos += 1;
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+                pos += 1;
+            }
+            if depth != 0 {
+                return Err("bad column list: unbalanced type parentheses");
+            }
+        }
+        if type_name == "TIMESTAMP" && kw(at(pos), "WITH") {
+            // consume WITH [LOCAL] TIME ZONE
+            let local = kw(at(pos + 1), "LOCAL");
+            let base = if local { pos + 2 } else { pos + 1 };
+            if !(kw(at(base), "TIME") && kw(at(base + 1), "ZONE")) {
+                return Err("bad column list: malformed TIMESTAMP WITH TIME ZONE");
+            }
+            type_name = if local {
+                "TIMESTAMP WITH LOCAL TIME ZONE".into()
+            } else {
+                "TIMESTAMP WITH TIME ZONE".into()
+            };
+            pos = base + 2;
+        }
+        // Column attributes until the next top-level ',' or the closing ')'.
+        let mut not_null = false;
+        let mut depth = 0usize;
+        loop {
+            match at(pos) {
+                None => return Err("bad column list: unterminated"),
+                Some(Tok::Punct('(')) => depth += 1,
+                Some(Tok::Punct(')')) => {
+                    if depth == 0 {
+                        break;
+                    }
+                    depth -= 1;
+                }
+                Some(Tok::Punct(',')) if depth == 0 => break,
+                Some(Tok::Word(w))
+                    if depth == 0 && w.eq_ignore_ascii_case("NOT") && kw(at(pos + 1), "NULL") =>
+                {
+                    not_null = true;
+                    pos += 1;
+                }
+                _ => {}
+            }
+            pos += 1;
+        }
+        cols.push(BootColumn {
+            name,
+            type_name,
+            length,
+            not_null,
+        });
+        match at(pos) {
+            Some(Tok::Punct(',')) => pos += 1,
+            Some(Tok::Punct(')')) => return Ok((cols, pos + 1)),
+            _ => return Err("bad column list: expected ',' or ')'"),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -458,6 +623,60 @@ mod tests {
             (0, ObjectKind::RollbackSegment, "SYSTEM")
         );
         assert_eq!(r.storage, Storage::Segment { file: 1, block: 9 });
+        assert_eq!(r.columns, Vec::new());
+
+        // Column lists (LV-038): OBJ$ has 21 columns in 11g, TAB$ 37.
+        let names: Vec<&str> = o.columns.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names.len(), 21);
+        assert_eq!(&names[..4], &["OBJ#", "DATAOBJ#", "OWNER#", "NAME"]);
+        assert_eq!(names[14], "OID$");
+        assert_eq!(names[20], "SPARE6");
+        assert_eq!(o.columns[3].type_name, "VARCHAR2");
+        assert_eq!(o.columns[3].length, Some(30));
+        assert!(o.columns[3].not_null);
+        assert!(!o.columns[1].not_null, "DATAOBJ# is nullable");
+        assert_eq!(o.columns[14].type_name, "RAW");
+        assert_eq!(o.columns[14].length, Some(16));
+        assert_eq!(o.columns[20].type_name, "DATE");
+        assert_eq!(
+            o.columns[3].column_type(),
+            Some(crate::value::ColumnType::Varchar2 { national: false })
+        );
+        assert_eq!(t.columns.len(), 37);
+        assert_eq!(t.columns[7].name, "COLS");
+        assert_eq!(t.columns[8].name, "CLUCOLS");
+        assert_eq!(c.columns.len(), 1);
+        assert_eq!(c.columns[0].name, "OBJ#");
+    }
+
+    #[test]
+    fn column_list_handles_defaults_long_and_multiword_types() {
+        let s = r#"CREATE TABLE X$("A" NUMBER DEFAULT 0 NOT NULL,"B" LONG,"C" LONG RAW,"D" TIMESTAMP(6) WITH LOCAL TIME ZONE,"E" VARCHAR2(10) DEFAULT (NVL(NULL,'x,y')) ,"F" NUMBER(10,2)) STORAGE ( OBJNO 7 EXTENTS (FILE 1 BLOCK 50))"#;
+        let o = parse_ddl(s).unwrap();
+        let v: Vec<(&str, &str, Option<u32>, bool)> = o
+            .columns
+            .iter()
+            .map(|c| (c.name.as_str(), c.type_name.as_str(), c.length, c.not_null))
+            .collect();
+        assert_eq!(
+            v,
+            vec![
+                ("A", "NUMBER", None, true),
+                ("B", "LONG", None, false),
+                ("C", "LONG RAW", None, false),
+                ("D", "TIMESTAMP WITH LOCAL TIME ZONE", Some(6), false),
+                ("E", "VARCHAR2", Some(10), false),
+                ("F", "NUMBER", Some(10), false),
+            ]
+        );
+        assert_eq!(o.obj, 7);
+        for bad in [
+            r#"CREATE TABLE X$("A" NUMBER, STORAGE ( OBJNO 7 EXTENTS (FILE 1 BLOCK 50))"#,
+            r#"CREATE TABLE X$("A") STORAGE ( OBJNO 7 EXTENTS (FILE 1 BLOCK 50))"#,
+            r#"CREATE TABLE X$("A" NUMBER(10) STORAGE ( OBJNO 7 EXTENTS (FILE 1 BLOCK 50))"#,
+        ] {
+            assert!(parse_ddl(bad).is_err(), "accepted: {bad}");
+        }
     }
 
     #[test]

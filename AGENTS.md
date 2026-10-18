@@ -4,7 +4,7 @@
 ## الفريق
 وكيلان — اقرأ `docs/agents/README.md` ثم ملفك (`ASTRA.md` / `LEAD.md`). المدير (Lead) يملك العقود وصحة البيانات ويدمج (ADR-0006).
 
-> **Handover (2026-10-18):** start with `docs/handover/NEXT_AGENT_PROMPT.md`, then `docs/handover/2026-10-18_handover.md` (L-6b plan) and `2026-10-15_handover.md`.
+> **Handover (2026-10-18):** `docs/handover/NEXT_AGENT_PROMPT.md` → `docs/handover/2026-10-18_handover.md` (state + plan d–j) → `docs/runbooks/agent-environment.md` (how to rebuild the sandbox, Docker, Oracle lab, golden set).
 ## الأوامر (Rust 1.99، مثبت عبر `rust-toolchain.toml`)
 - بناء: `cargo build --workspace` · إصدار Windows: `cargo build --release -p odr-cli` ← `target/release/odr.exe`
 - بوابات الجودة (نفس CI): `cargo fmt --all -- --check` · `cargo clippy --workspace --all-targets -- -D warnings` · `cargo test --workspace` · `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` · `cargo deny check`

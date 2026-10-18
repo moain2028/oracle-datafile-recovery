@@ -12,14 +12,19 @@ You are the **Lead** (manager + coder) of `moain2026/oracle-datafile-recovery` �
 6. `lab/README.md`, `crates/odr-corrupt/`
 
 ## Environment
-- `source ~/.cargo/env` (Rust 1.99, edition 2024). The GitHub token is in `~/.git-credentials`; use the REST API for PRs.
+- **Everything is reproducible from zero with `docs/runbooks/agent-environment.md`** (Rust, GitHub token, Docker, Oracle 26ai, the lab, the golden set). Read it before touching the sandbox.
+- `source ~/.cargo/env` (Rust 1.99, edition 2024). Rust may not be installed in a fresh sandbox: runbook §1.
+- Docker is **not** pre-installed but **can** be installed (runbook §3). The golden set can also be downloaded from GitHub Release `golden-26ai-20261018` (runbook §4) — 62 MB.
+- CI is active (`.github/workflows/ci.yml`) and must be green on Windows + Linux before merge.
 - Gates (all must pass before a merge):
   `cargo fmt --check`, `cargo run -p gen_charsets -- --check` (or the existing charset check script),
   `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`, `cargo doc --no-deps`,
   `cargo deny check` (root and `fuzz/`), and `cd fuzz && cargo check --bins`.
 - Lints: no `unsafe`; indexing, unwrap and panic are denied; arithmetic needs a module `#![allow]` with a justification comment.
 
-## Current state (2026-10-15)
+## Current state — see `docs/handover/2026-10-18_handover.md` (supersedes the list below where they differ)
+
+## State as of 2026-10-15 (historical)
 - Merged on main: block/kcbh/checksum, ktb/ITL, kdb (MSSM/ASSM), row pieces (chained/migrated/rowdep/cluster), types (NUMBER/DATE/TIMESTAMP/chars), charsets, bootstrap$ catalog (`dict/`), fuzz targets.
 - Branch `lead/handover-lab` (this PR): handover docs, REQ-004, the Arabic brief, the lab (`lab/` SQL + `lab.sh` / `lab.ps1`), and the `odr-corrupt` crate (deterministic corruption + manifest, tested).
 - **PR #10 (Astra, S1a block-size/layout inference): changes requested** (B1 decouple inference; B2 bigfile rdba scheme; B3 supermajority; B4 threshold on valid blocks). Review it again when it's updated, adversarially.
@@ -27,8 +32,8 @@ You are the **Lead** (manager + coder) of `moain2026/oracle-datafile-recovery` �
 - **Blocker:** there's no Docker in the sandboxes, so the lab must run on the owner's Windows machine or a VPS. Real-world tests (T1 evidence) are pending.
 - The customer's DMP files are `EXPORT:V11.01.00` (original exp), **not DBF**. They are private; never commit them. A possible future M8 milestone is a reader for corrupted exp DMP files.
 
-## Next tasks (priority)
-1. Merge or confirm this PR; pull main; run all gates.
+## Next tasks (priority) — the detailed plan with acceptance criteria is §5 of the 2026-10-18 memo (steps d → j)
+1. Pull main; run all gates **including** `ODR_GOLDEN=… cargo test -p odr-core --test golden_lab`.
 2. Dictionary stage 2 (L-6b.2, plan in the 2026-10-18 memo; `kcvfh` + `RdbaScheme` are done): extent maps → bootstrap$ rows → OBJ$/TAB$/COL$/USER$ using the bootstrap catalog (locations from `Catalog`), including CDB/PDB and column changes between 11g and 19c/26ai. Fast ADD COLUMN DEFAULT (`COL$.PROPERTY & 0x40000000`) must never output a false NULL; it's either the default or explicitly unknown.
 3. REQ-004: partial-block extraction, dummy names `OBJ_<objd>` / `COL_<n>` when the dictionary is missing, a forensic report, and no writes to the evidence.
 4. Bigfile support (the 26ai default): an rdba with no file bits.

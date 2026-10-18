@@ -4,10 +4,12 @@
 ## الفريق
 وكيلان — اقرأ `docs/agents/README.md` ثم ملفك (`ASTRA.md` / `LEAD.md`). المدير (Lead) يملك العقود وصحة البيانات ويدمج (ADR-0006).
 
-> **Handover (2026-10-18):** `docs/handover/NEXT_AGENT_PROMPT.md` → `docs/handover/2026-10-18_handover.md` (state + plan d–j) → `docs/runbooks/agent-environment.md` (how to rebuild the sandbox, Docker, Oracle lab, golden set).
+> **Handover (2026-10-18, after PR #21):** `docs/handover/NEXT_AGENT_PROMPT.md` → `docs/handover/2026-10-18_final_handover.md` (state, method, numbers, limits, plan §6) → `docs/runbooks/agent-environment.md` (rebuild the sandbox, Docker, Oracle lab, golden set). Older memos (`2026-10-18_handover.md`, `2026-10-15_handover.md`) are history.
 ## الأوامر (Rust 1.99، مثبت عبر `rust-toolchain.toml`)
 - بناء: `cargo build --workspace` · إصدار Windows: `cargo build --release -p odr-cli` ← `target/release/odr.exe`
-- بوابات الجودة (نفس CI): `cargo fmt --all -- --check` · `cargo clippy --workspace --all-targets -- -D warnings` · `cargo test --workspace` · `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` · `cargo deny check`
+- بوابات الجودة (نفس CI): `cargo fmt --all -- --check` · `cargo clippy --workspace --all-targets -- -D warnings` · `cargo test --workspace` · `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` · `python3 tools/gen_charsets.py --check` · `cd fuzz && cargo check --bins` · `cargo deny check`
+- البوابات الذهبية (إلزامية لأي تغيير في محلّل): `ODR_GOLDEN=$PWD/lab/out/golden/20261018T080131Z cargo test -p odr-core --test golden_lab` (8) و`… cargo test -p odr-cli` (5) — المجموعة من Release `golden-26ai-20261018`.
+- الاستخدام: `odr dict <system.dbf> [<files>…] [--json]` · `odr extract <files…> --table OWNER.NAME --out dir/ [--charset X] [--assume PATH=file:N,ts:N[,rfile:N],bs:N]`
 - fuzz (nightly): `cd fuzz && cargo +nightly fuzz run decode_number`
 - تجربة: `cargo run -p odr-testkit --example make_image -- t.img 1024` ثم `cargo run -p odr-cli -- scan t.img`
 ## القواعد الثابتة (لا استثناء)

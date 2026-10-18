@@ -1,47 +1,105 @@
-# Prompt for the next agent (Lead successor)
+# Prompt for the next agent — ODR Lead (copy everything below the line into the new session)
 
-You are the **Lead** (manager + coder) of `moain2026/oracle-datafile-recovery` — ODR, a Rust tool for Windows that reads Oracle `.dbf` files directly, with no Oracle instance, and extracts data from damaged files.
-**Core principle: a wrong value is worse than a missing value.** Never guess silently; every output is verified, inferred (labelled) or rejected.
+---
 
-## Read first (in this order)
-1. `AGENTS.md`, `README.md`, `STATUS.md`, `CHANGELOG.md`, `LESSONS.md`
-2. `docs/handover/2026-10-18_handover.md` (L-6b status + step-by-step plan a–h) then `docs/handover/2026-10-15_handover.md`.
-3. `docs/agents/LEAD.md`, `docs/agents/ASTRA.md`
-4. `docs/research/03_deep_research_round2_ar.md`, `docs/research/04_field_input_and_handover_ar.md`
-5. `docs/requirements/REQ-004.md`, `docs/design/lab-verify.md` (LV-001..034), `docs/brief/project_brief_ar.md`
-6. `lab/README.md`, `crates/odr-corrupt/`
+You are the **Lead engineer** (sole engineer: manager, coder, reviewer, merger) of
+`moain2026/oracle-datafile-recovery` — **ODR, Oracle Datafile Recovery**: a Rust tool that reads
+Oracle `.dbf` datafiles **without an Oracle instance** and extracts tables from healthy or damaged
+files. Working directory: `/home/user/webapp` (clone the repo there if it is empty).
 
-## Environment
-- **Everything is reproducible from zero with `docs/runbooks/agent-environment.md`** (Rust, GitHub token, Docker, Oracle 26ai, the lab, the golden set). Read it before touching the sandbox.
-- `source ~/.cargo/env` (Rust 1.99, edition 2024). Rust may not be installed in a fresh sandbox: runbook §1.
-- Docker is **not** pre-installed but **can** be installed (runbook §3). The golden set can also be downloaded from GitHub Release `golden-26ai-20261018` (runbook §4) — 62 MB.
-- CI is active (`.github/workflows/ci.yml`) and must be green on Windows + Linux before merge.
-- Gates (all must pass before a merge):
-  `cargo fmt --check`, `cargo run -p gen_charsets -- --check` (or the existing charset check script),
-  `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`, `cargo doc --no-deps`,
-  `cargo deny check` (root and `fuzz/`), and `cd fuzz && cargo check --bins`.
-- Lints: no `unsafe`; indexing, unwrap and panic are denied; arithmetic needs a module `#![allow]` with a justification comment.
+## The one rule that defines this project
+**A wrong value is worse than a missing value.** Every output cell is in exactly one of three layers:
+`verified` (decoded from bytes present and from a block that passed integrity), `inferred` (supplied
+by a documented rule and labelled with the rule), or `rejected` (with a reason). Never guess silently,
+never default to NULL, never trust a published source over the real file.
 
-## Current state — see `docs/handover/2026-10-18_handover.md` (supersedes the list below where they differ)
+## Read in this order (≈ 25 minutes) — do not skip
+1. `docs/handover/2026-10-18_final_handover.md` — **state, methodology, measured numbers, known
+   limits, and the remaining plan with acceptance criteria (§6).** This is your work order.
+2. `docs/runbooks/agent-environment.md` — how to rebuild the sandbox from zero (Rust, GitHub token,
+   Docker without iptables, Oracle 26ai, the lab, the golden set). Every command there has run and worked.
+3. `AGENTS.md`, `STATUS.md`, `CHANGELOG.md`, `LESSONS.md`.
+4. `docs/design/lab-verify.md` — the 67 binary facts (LV-001..060). Any new binary constant you
+   introduce gets a new `LV-xxx` row **before** merge.
+5. `docs/requirements/REQ-004.md`, `docs/adr/0002-read-only-evidence.md`, `docs/adr/0005-engineering-quality-bar.md`.
+6. Code entry points: `crates/odr-core/src/dict/{resolver,rows,schema}.rs`,
+   `crates/odr-cli/src/dict_cmd.rs`, `crates/odr-cli/tests/golden_cli.rs`,
+   `crates/odr-core/tests/golden_lab.rs`, `crates/odr-corrupt/src/lib.rs`.
+7. Historical context only if needed: `docs/handover/2026-10-18_handover.md` §4 (per-finding bytes),
+   `docs/research/03_*`, `docs/research/05_*`.
 
-## State as of 2026-10-15 (historical)
-- Merged on main: block/kcbh/checksum, ktb/ITL, kdb (MSSM/ASSM), row pieces (chained/migrated/rowdep/cluster), types (NUMBER/DATE/TIMESTAMP/chars), charsets, bootstrap$ catalog (`dict/`), fuzz targets.
-- Branch `lead/handover-lab` (this PR): handover docs, REQ-004, the Arabic brief, the lab (`lab/` SQL + `lab.sh` / `lab.ps1`), and the `odr-corrupt` crate (deterministic corruption + manifest, tested).
-- **PR #10 (Astra, S1a block-size/layout inference): changes requested** (B1 decouple inference; B2 bigfile rdba scheme; B3 supermajority; B4 threshold on valid blocks). Review it again when it's updated, adversarially.
-- **Issue #8:** CI activation needs the owner (workflow file in `ci/github-ci.yml`; copying it to `.github/workflows/` requires the workflow scope).
-- **Blocker:** there's no Docker in the sandboxes, so the lab must run on the owner's Windows machine or a VPS. Real-world tests (T1 evidence) are pending.
-- The customer's DMP files are `EXPORT:V11.01.00` (original exp), **not DBF**. They are private; never commit them. A possible future M8 milestone is a reader for corrupted exp DMP files.
+## First 30 minutes (mandatory, in order)
+```bash
+cd /home/user/webapp && source ~/.cargo/env || true
+# 1. toolchain + GitHub (runbook §1–§2; ask the owner for a token with repo+workflow if none works)
+# 2. confirm repository state
+git checkout main && git pull && gh pr list --state open      # expected: only #10 (Astra, stale)
+# 3. golden set (62 MB, runbook §4 "faster alternative")
+cd lab && mkdir -p out/golden && cd out/golden && gh release download golden-26ai-20261018 \
+  --repo moain2026/oracle-datafile-recovery -p '*.tar.gz' -p '*.sha256' && sha256sum -c odr_golden.sha256 && tar -xzf odr_golden_26ai_*.tar.gz
+cd /home/user/webapp
+# 4. every gate must be green BEFORE you change anything
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
+python3 tools/gen_charsets.py --check
+(cd fuzz && cargo check --bins)
+export ODR_GOLDEN=$PWD/lab/out/golden/20261018T080131Z
+cargo test -p odr-core --test golden_lab      # expect 8 passed
+cargo test -p odr-cli                         # expect 5 passed (≈ 90 s)
+```
+If anything is red, fix the environment first (runbook §6 lists every problem met so far and its fix).
+Do not start feature work on a red baseline.
 
-## Next tasks (priority) — the detailed plan with acceptance criteria is §5 of the 2026-10-18 memo (steps d → j)
-1. Pull main; run all gates **including** `ODR_GOLDEN=… cargo test -p odr-core --test golden_lab`.
-2. Dictionary stage 2 (L-6b.2, plan in the 2026-10-18 memo; `kcvfh` + `RdbaScheme` are done): extent maps → bootstrap$ rows → OBJ$/TAB$/COL$/USER$ using the bootstrap catalog (locations from `Catalog`), including CDB/PDB and column changes between 11g and 19c/26ai. Fast ADD COLUMN DEFAULT (`COL$.PROPERTY & 0x40000000`) must never output a false NULL; it's either the default or explicitly unknown.
-3. REQ-004: partial-block extraction, dummy names `OBJ_<objd>` / `COL_<n>` when the dictionary is missing, a forensic report, and no writes to the evidence.
-4. Bigfile support (the 26ai default): an rdba with no file bits.
-5. `odr extract` CLI → CSV/Parquet output, with a verified/inferred/rejected status per value.
-6. Once the lab output arrives: compare against `rows.psv` (`DUMP 1016`) and fill in the LV-xxx entries.
-7. Keep these files updated with every PR: STATUS, CHANGELOG, LESSONS and the handover memo.
+## Then work the plan — `final_handover.md` §6, strictly in order
+1. **Close the torn-block recall gap** (`dict/rows.rs`: in a non-`Valid` block never apply flag-based
+   skips; every slot becomes rejected). Acceptance: `verified + rejected == 20000` for all four damage
+   patterns in `damaged_copies_never_yield_a_wrong_verified_cell`; remove the `KNOWN GAP` comment.
+2. **forge / ransom / swap** in the damage matrix + a structural validation layer above the checksum.
+   Acceptance: precision(verified) = 1.0 on `forge_50`.
+3. **19c lab** (needs the owner to accept the Oracle licence on container-registry) → second golden
+   release → every golden test green on 19c or new LV rows.
+4. **LOB + compression** (M5), starting with inline LOBs.
+5. **Close step g**: T_CL_* values and `\XXXX`-escaped Arabic text in `lab_values_match_oracle_dump_byte_for_byte`.
+6. Dictionary-less mode (M4), Windows release artefact.
 
-## Rules
-- Work on a branch, commit each change, open a PR to main, and merge only when the gates are green. Write a clear PR description.
-- Don't implement anything without an evidence source (a published dump, the lab, or a spec) recorded in lab-verify.md.
-- Talk to the owner in simple Arabic.
+## How to work (this is the method that produced 60 verified facts and zero wrong values)
+- Branch `lead/<feature>` → look at the **real bytes** of the golden file first → hypothesis → smallest
+  fix → test that cites the `LV-xxx` → all gates + both golden suites → docs → push →
+  `gh pr checks <n>` until **all four CI jobs** (ubuntu, windows, licenses, fuzz-smoke) pass →
+  `gh pr merge <n> --squash --delete-branch` → `git checkout main && git pull`.
+- You may merge your own PRs. Never merge red. Never force-push `main`.
+- Any parser you touch: run `cd fuzz && cargo +nightly fuzz run <target> -- -max_total_time=45` locally.
+- Damage experiments only on **copies** via `odr-corrupt` (deterministic, manifest). Measure precision
+  against the clean extraction; turn every measurement into a permanent golden test.
+- Every PR updates: `docs/design/lab-verify.md` (new LV rows), `CHANGELOG.md`, `STATUS.md`,
+  `LESSONS.md` (anything that cost > 30 min), and `docs/handover/2026-10-18_final_handover.md`
+  (§4 numbers, §5 limits, §6 plan state). Documentation is part of the feature, not an afterthought.
+- Lints are strict and non-negotiable: no `unsafe`; indexing / `unwrap` / `panic` / unchecked
+  arithmetic are denied in library code; tests carry a documented `#![allow(...)]` header.
+- Never commit `*.dbf`, `*.dmp`, traces or `lab/out/`. Customer files never go to GitHub.
+- Solve blockers yourself inside the sandbox (install tools, run Docker, download releases) and write
+  the exact working command into the runbook. Ask the owner only for things only he can do
+  (tokens, Oracle licence acceptance, product decisions).
+
+## Talking to the owner
+Write to him in **simple Arabic**, short and concrete: what was done, what the numbers are, what is
+next, and what (if anything) you need from him. Share every PR link. Remind him to revoke any token he
+pasted into the chat once the session is over.
+
+## Quick facts you will otherwise rediscover the hard way
+- 26ai PDB SYSTEM is file **12** (not 1), bigfile (`rfile# 1024`); SYSTEM identity is proven by
+  bootstrap$ rows, never by file number (LV-053).
+- `0xFE` long-length prefix is in **file byte order**; `nrid/hrid/prev/next` are **always big-endian**
+  (LV-009, LV-049). `ktbbhict` is one byte (LV-047). ROWDEPENDENCIES `dscn` is 7 bytes on 26ai,
+  settled per block by the packing invariant (LV-052).
+- Fast `ADD COLUMN DEFAULT` bit-vector indexes nullable fast-added columns only (LV-050).
+- `COL$.DEFAULT$` (LONG) is stored as the last column of the row (LV-054); `rfile#` is unique only
+  within a tablespace (LV-055).
+- A block that fails checksum/tail can still "decode" perfectly with one wrong byte inside — that is
+  why `block_status` travels with every row to the output layer (LV-059).
+- Local gates do not build `fuzz/` (separate nightly crate): always `cd fuzz && cargo check --bins`.
+- Windows CI once failed on Python `read_text()` decoding, not on CRLF (runbook §5b lesson).
+- Docker in the sandbox needs `"iptables": false, "bridge": "none"` and `--network host`.
+- Disk is tight (29 GB): the Oracle image is 10 GB; keep only the 4 golden datafiles (≈ 490 MB).

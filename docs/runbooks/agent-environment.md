@@ -1,4 +1,4 @@
-# Runbook — إعداد بيئة الوكيل من الصفر (مجرَّب 2026-10-18)
+# Runbook — إعداد بيئة الوكيل من الصفر (مجرَّب 2026-10-18؛ آخر تحديث بعد PR #21)
 
 > لأي وكيل جديد في sandbox جديد (Debian 13، 4 أنوية، 8 GB RAM، 29 GB قرص، لا Docker مثبّت، `sudo` بلا كلمة سر).
 > كل أمر هنا نُفِّذ فعلاً ونجح. المدة الكلية من الصفر إلى أول مجموعة ذهبية ≈ 35 دقيقة.
@@ -122,6 +122,33 @@ sha256sum -c odr_golden.sha256 && tar -xzf odr_golden_26ai_*.tar.gz && ls
 | `no space left on device` أثناء `docker cp` | نسخ 3.6 GB datafiles | أبقِ 4 ملفات فقط (أعلاه) |
 | `git push` يفشل `Invalid username or token` | انتهاء توكن المنصة المؤقت | اكتب توكن المالك في `~/.git-credentials` |
 | `golden_lab` يفشل على bootstrap$ | **اكتشاف حقيقي**: طول `0xFE` بترتيب الملف لا BE | أُصلح في `row/piece.rs` (LV-009) |
+
+## 7. تجارب التلف (odr-corrupt) — كيف قيست precision/recall في LV-059/060
+```bash
+cargo build --release -p odr-cli -p odr-corrupt
+G=$PWD/lab/out/golden/20261018T080131Z; SYS=$G/datafiles/FREE_FREEPDB1_system01.dbf; A=$G/datafiles/odr_odr_assm01.dbf
+mkdir -p /tmp/dmg
+for op in zero:200 bitrot:400 holes:20:16 torn:200 wipe-header "ransom:16384:8192:10" forge:50 swap:20; do
+  n=$(echo "$op" | tr ':' '_'); ./target/release/odr-corrupt --input $A --output /tmp/dmg/$n.dbf --block-size 8192 --seed 7 --op "$op"
+done
+./target/release/odr extract $SYS $A --table ODR.T_JOURNAL --out /tmp/dmg/out_clean                 # الحقيقة المرجعية
+./target/release/odr extract $SYS /tmp/dmg/bitrot_400.dbf --table ODR.T_JOURNAL --out /tmp/dmg/out_bitrot   # exit 2 = صفوف مرفوضة
+# precision(verified) = |verified ∩ clean| / |verified| ؛ recall = |verified| / 20000
+python3 -c "
+clean=set(open('/tmp/dmg/out_clean/verified.csv').read().splitlines()[1:])
+v=set(open('/tmp/dmg/out_bitrot/verified.csv').read().splitlines()[1:])
+print('precision', len(v&clean)/len(v), 'recall', len(v)/len(clean), 'wrong', len(v-clean))"
+# رأس ممسوح: بلا --assume ⇒ exit 1؛ معه ⇒ كل الصفوف inferred
+./target/release/odr extract $SYS /tmp/dmg/wipe-header.dbf --table ODR.T_JOURNAL --out /tmp/dmg/out_wh \
+  --assume "/tmp/dmg/wipe-header.dbf=file:16,ts:7,rfile:16,bs:8192"
+```
+الاختباران الذهبيان `damaged_copies_never_yield_a_wrong_verified_cell` و`wiped_header_requires_assume_and_downgrades_to_inferred` يفعلان ذلك آلياً داخل العملية (`odr_corrupt::apply`) — أي نمط جديد يُضاف هناك، لا كتجربة يدوية فقط.
+
+## 8. ملاحظات القرص والحاوية (حالة نهاية الجلسة 2026-10-18)
+- القرص 27/29 GB: `/home/user/docker-data` 24 GB (صورة 10 GB + حجم oradata) · `target/` 1.9 GB. عند الضيق: `cargo clean` أولاً، ثم `docker rm -f odr-oracle && docker volume rm odr-oradata` (المجموعة الذهبية محفوظة في Release).
+- بعد `SHUTDOWN IMMEDIATE` للتصدير تبقى الحاوية `unhealthy`: `docker restart odr-oracle` ثم انتظر `healthy` (≈ 3 دقائق).
+- `/usr/bin/time` و`bc` غير مثبتين؛ للقياس استخدم بايثون (`time.time()` حول `subprocess.run`).
+- `odr-corrupt` أصبح dev-dependency في `odr-cli` (PR #21) — اختبارات التلف لا تحتاج الملف التنفيذي.
 
 ## Fuzz محلياً (مطلوب قبل كل PR يلمس محلّلاً)
 ```bash

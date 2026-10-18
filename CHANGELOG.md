@@ -2,6 +2,7 @@
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 ## [Unreleased]
 ### Added
+- Final handover package: `docs/handover/2026-10-18_final_handover.md` (state, method, measured numbers, known limits, ordered plan with acceptance criteria), rewritten `NEXT_AGENT_PROMPT.md`, runbook §7 (damage-measurement recipe) + §8, README/STATUS/AGENTS refreshed to the post-#21 state.
 - LV-059: every `RawRow` carries `block_status`; rows from blocks failing checksum/tail check are **rejected** (`block integrity: …`), zeroed/truncated blocks appear as `integrity:` skips. Measured with `odr-corrupt` on the 26ai golden ASSM file: precision(verified) = 1.0 on zero/bitrot/holes/torn (was 3 wrong verified cells), recall 0.958/0.937/1.0/0.986. Golden test `damaged_copies_never_yield_a_wrong_verified_cell`.
 - LV-060: `odr dict|extract --assume PATH=file:N,ts:N[,rfile:N],bs:N` for files whose header is destroyed; rows from such a file are at best *inferred* and labelled; `report.json` marks `assumed`. Golden test `wiped_header_requires_assume_and_downgrades_to_inferred`.
 - `odr-corrupt` is a workspace dependency (dev) so damage tests run in-process and deterministically.

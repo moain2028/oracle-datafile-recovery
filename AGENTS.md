@@ -4,6 +4,7 @@
 ## الفريق
 وكيلان — اقرأ `docs/agents/README.md` ثم ملفك (`ASTRA.md` / `LEAD.md`). المدير (Lead) يملك العقود وصحة البيانات ويدمج (ADR-0006).
 
+> **Session plan 2026-10-21 (part 2):** `docs/handover/2026-10-21_session_plan.md` — priorities from the field-expert interview (11g, Windows release, trial kit, torn partial recovery, dictionary-less mode).
 > **Handover (2026-10-18, after PR #21):** `docs/handover/NEXT_AGENT_PROMPT.md` → `docs/handover/2026-10-18_final_handover.md` (state, method, numbers, limits, plan §6) → `docs/runbooks/agent-environment.md` (rebuild the sandbox, Docker, Oracle lab, golden set). Older memos (`2026-10-18_handover.md`, `2026-10-15_handover.md`) are history.
 ## الأوامر (Rust 1.99، مثبت عبر `rust-toolchain.toml`)
 - بناء: `cargo build --workspace` · إصدار Windows: `cargo build --release -p odr-cli` ← `target/release/odr.exe`

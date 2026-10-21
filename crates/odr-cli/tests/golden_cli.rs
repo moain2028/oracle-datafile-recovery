@@ -544,6 +544,108 @@ fn forged_swapped_and_encrypted_copies_are_rejected_not_believed() {
     let _ = std::fs::remove_dir_all(&tmp);
 }
 
+/// LV-064 — *a block with one undecodable row is tainted; its siblings are
+/// not verified.*
+///
+/// Oracle's `chkval` is a 16-bit XOR of the block (verified on 26ai and 11g
+/// blocks): two bit flips in the same bit position of the same 16-bit lane
+/// cancel, so 1.8 % of double-hit bitrot blocks still pass the checksum
+/// (10 seeds × 2 versions). When such a block has a row whose value does
+/// not decode exactly, every other row of that block must be rejected with
+/// `block tainted`, never verified. Here: seed 5 on the 26ai ASSM file,
+/// block 3307 (two flips, chkval unchanged, column 4 of one row no longer
+/// decodes) — before LV-064 its 136 siblings were verified; one of them
+/// carried a wrong value.
+#[test]
+fn tainted_block_siblings_are_not_verified() {
+    use odr_corrupt::{Op, Spec, apply};
+    let Some(g) = golden() else { return };
+    let tmp = std::env::temp_dir().join(format!("odr_cli_taint_{}", std::process::id()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    let clean_path = g.join("datafiles/odr_odr_assm01.dbf");
+    let clean_bytes = std::fs::read(&clean_path).unwrap();
+    let clean_out = tmp.join("clean");
+    assert!(
+        extract_journal(&g, &clean_path, &clean_out, &[])
+            .status
+            .success()
+    );
+    let truth = csv_rows(&clean_out.join("verified.csv"));
+    let spec = Spec {
+        block_size: 8192,
+        seed: 5,
+        ops: vec![Op::Bitrot { count: 400 }],
+        blocks: Some((3204, 3327)),
+    };
+    let (bytes, manifest) = apply(&clean_bytes, &spec).unwrap();
+    // Blocks hit twice or more whose checksum still folds to zero.
+    let mut hits: std::collections::HashMap<u64, usize> = std::collections::HashMap::new();
+    for c in &manifest.changes {
+        *hits.entry(c.block).or_default() += 1;
+    }
+    let colliding: Vec<u64> = hits
+        .iter()
+        .filter(|(b, n)| {
+            **n >= 2
+                && odr_core::block::xor_fold(&bytes[**b as usize * 8192..(**b as usize + 1) * 8192])
+                    == 0
+        })
+        .map(|(b, _)| *b)
+        .collect();
+    assert!(
+        !colliding.is_empty(),
+        "seed 5 must produce at least one checksum collision"
+    );
+    let dmg = tmp.join("bitrot.dbf");
+    std::fs::write(&dmg, &bytes).unwrap();
+    let out_dir = tmp.join("bitrot");
+    let out = extract_journal(&g, &dmg, &out_dir, &[]);
+    assert_eq!(out.status.code(), Some(2));
+    let verified = csv_rows(&out_dir.join("verified.csv"));
+    let rej = std::fs::read_to_string(out_dir.join("rejected.csv")).unwrap();
+    // Any colliding block that has a 'not exact' row must have *no* verified row.
+    let mut exercised = 0usize;
+    for b in &colliding {
+        let has_inexact = csv_records(&rej)
+            .iter()
+            .any(|r| r.split(',').nth(1) == Some(&b.to_string()) && r.contains("not exact"));
+        if has_inexact {
+            exercised += 1;
+            let v_here = verified
+                .iter()
+                .filter(|l| l.split(',').nth(1) == Some(&b.to_string()))
+                .count();
+            assert_eq!(
+                v_here, 0,
+                "block {b}: tainted block still has verified rows"
+            );
+            assert!(
+                rej.contains("block tainted"),
+                "block {b}: siblings must say why"
+            );
+        }
+    }
+    assert!(
+        exercised >= 1,
+        "seed 5 must contain at least one tainted block (had {} colliding)",
+        colliding.len()
+    );
+    // Measured ceiling (2026-10-21, seed 5): the wrong verified rows left
+    // (1, in block 3241) are only in colliding blocks where *no* row became
+    // inexact — the honest residue of a 16-bit checksum. Bounded here;
+    // never silently accepted.
+    let wrong: Vec<&String> = verified.iter().filter(|l| !truth.contains(*l)).collect();
+    for l in &wrong {
+        let b: u64 = l.split(',').nth(1).unwrap().parse().unwrap();
+        assert!(
+            colliding.contains(&b),
+            "wrong verified row outside a checksum-colliding block: {l}"
+        );
+    }
+    assert!(wrong.len() <= 1, "wrong verified rows {}", wrong.len());
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
 /// LV-060 — *destroyed header ⇒ no identity ⇒ refuse; `--assume` ⇒ inferred.*
 ///
 /// With blocks 0..=1 wiped the file cannot prove file#/tablespace. ODR must

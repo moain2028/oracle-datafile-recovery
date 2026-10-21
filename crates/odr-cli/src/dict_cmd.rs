@@ -527,6 +527,27 @@ pub(crate) fn extract(
     let scheme = set
         .scheme(hdr_file)
         .context("segment file not registered")?;
+    // LV-064 — pass 1: a block that passed checksum and structure but holds
+    // a row whose value does not decode exactly (invalid UTF-8, NUMBER /
+    // DATE out of range) is *tainted*: the XOR-fold checksum lets two bit
+    // flips in the same 16-bit lane cancel (measured 1.8 % of double-hit
+    // blocks on 26ai and 11g), and the sibling rows of such a block carried
+    // wrong values labelled verified. On healthy files of all three
+    // versions no row is ever "not exact", so this costs nothing there.
+    let mut tainted: std::collections::HashSet<u32> = std::collections::HashSet::new();
+    for r in rows.rows.iter().filter_map(|r| r.as_ref().ok()) {
+        if r.block_status != odr_core::block::BlockStatus::Valid || r.structural.is_some() {
+            continue;
+        }
+        let stored: Vec<Option<&[u8]>> = r.columns.iter().map(|c| c.as_deref()).collect();
+        let cells = materialize(&t, &stored, cs);
+        if cells
+            .iter()
+            .any(|c| matches!(c, Cell::Verified(v) if !v.is_exact()))
+        {
+            tainted.insert(r.provenance.rdba);
+        }
+    }
     for r in &rows.rows {
         match r {
             Err((prov, e)) => {
@@ -560,6 +581,13 @@ pub(crate) fn extract(
                     }
                 }
                 let layer = match classify(&cells, r.block_status, r.structural) {
+                    // LV-064: sibling of a row that did not decode exactly.
+                    Layer::Verified | Layer::Inferred(_) if tainted.contains(&r.provenance.rdba) => {
+                        Layer::Rejected(
+                            "block tainted: another row of this block holds a value that does not decode (LV-064)"
+                                .into(),
+                        )
+                    }
                     // LV-060: identity of the file was asserted, not read.
                     Layer::Verified if file_assumed => {
                         Layer::Inferred("file identity from --assume (header destroyed)".into())

@@ -98,7 +98,7 @@
 | **ransom**: الكتل المشفَّرة `integrity: Foreign/TailMismatch`؛ الرأس المشفَّر يحتاج `--assume` | مُختبَر آلياً: 0 خطأ، recall 0.895 | LV-062 |
 | Hash clusters مرفوضة صراحةً | رسالة واضحة | dict_cmd.rs |
 | LOB / الضغط OLTP/Basic غير مدعومة (M5) | رفض صريح لا تخمين | STATUS M5 |
-| مؤكَّد على **26ai + 21c** (LE)؛ 19c/11g وbig-endian ⬜ | LV-009 BE، LV-019/020 | §6 خطوة 3 |
+| مؤكَّد على **26ai + 21c + 11g** (LE)؛ 19c وbig-endian ⬜ | LV-009 BE، LV-019/020 | §6 خطوة 3 |
 | اختبار القيم لا يشمل T_CL_* ولا النصوص العربية `\XXXX` (escape في rows.psv) | g غير مغلق 100% | §6 خطوة 5 |
 | `fuzz/corpus/` (1,023 ملف، 4.1 MB) متتبَّع في git منذ #20 | قرار: بذور أم `.gitignore` | §6 خطوة 0 |
 
@@ -111,13 +111,13 @@
 | **0** | نظافة | قرار `fuzz/corpus/`؛ حذف الفقرات التاريخية المكررة من `2026-10-18_handover.md` إن أردت | CI أخضر |
 | **1** | ~~سدّ فجوة torn~~ **✅ منجزة (LV-061، 2026-10-21)** | `dict/rows.rs`: `trusted = status == Valid`؛ في كتلة غير موثوقة تُعدَّد كل خانات `nrow` ولا يُطبَّق أي تخطٍّ (`D`/continuation/`is_deleted`/unused) — تخرج `RowError::Integrity`؛ والكتلة التي لا تُفكّ تُسجَّل `integrity:` | ✅ `verified + rejected + zeroed == 20000` للأنماط الأربعة؛ precision 1.000 ثابتة؛ اختباران ذهبيان |
 | **2** | ~~forge / ransom / swap~~ **✅ منجزة (LV-062، 2026-10-21)** | `DataBlock::structural_check()` بسبع ثوابت صمدت على 18,084 كتلة حقيقية (موضع rdba، lock≤itc، خانة غير مفكوكة⇒D، lck≥مراجع، سلسلة frre، لا تداخل، سقف avsp)؛ الكتلة المخالفة ⇒ غير موثوقة كلها؛ `odr-corrupt --blocks` لاستهداف امتداد الجدول | ✅ swap 105/105 مرفوضة، precision 1.0 · forge: 39/144 كتلة مرفوضة بنيوياً، **الباقي 110/54,000 صف خاطئ (0.2%) تزوير داخل قيمة عمود — حد معلَن ومسقوف باختبار ذهبي** · ransom+`--assume`: 0 خطأ، recall 0.895 · 0 إيجابيات كاذبة |
-| **3** | ~~مختبر 19c~~ **✅ مختبر 21c XE منجز (LV-063، 2026-10-21)** — 19c الرسمي ما زال يحتاج رخصة | `gvenzl/oracle-xe:21-slim` بلا رخصة (runbook §7b)؛ golden ثانية `golden-21c-20261021`؛ اختبار `lab2_second_version_reads_like_oracle` بلا أي ثابت مُشفَّر | ✅ 15/15 جدول ROWIDs == أوراكل، 140k خلية، قاموس 0 مشاكل؛ اكتشاف HWM (LV-063) أصلح 21c دون تغيير 26ai. **التالي:** 11g XE (`gvenzl/oracle-xe:11-slim`) بنفس الطريقة، ثم 19c عند توفر الرخصة |
+| **3** | ~~مختبر 19c~~ **✅ مختبر 21c XE منجز (LV-063، 2026-10-21)** — 19c الرسمي ما زال يحتاج رخصة | `gvenzl/oracle-xe:21-slim` بلا رخصة (runbook §7b)؛ golden ثانية `golden-21c-20261021`؛ اختبار `lab2_second_version_reads_like_oracle` بلا أي ثابت مُشفَّر | ✅ 15/15 جدول ROWIDs == أوراكل، 140k خلية، قاموس 0 مشاكل؛ اكتشاف HWM (LV-063) أصلح 21c دون تغيير 26ai. **✅ 11g XE 11.2 غير-CDB منجز أيضاً (2026-10-21):** `golden-11g-20261021`، قاموس 0 مشاكل، `lab2` يمر **بلا أي تغيير في الكود** (runbook §7b). 19c عند توفر الرخصة |
 | **4** | **LOB + الضغط** (M5) | في `10_corpus.sql`: جدول CLOB/BLOB (BasicFile ثم SecureFile) + جدول `COMPRESS BASIC`؛ `row/kdb.rs` يكشف flag 0x40 ويرفض صراحة الآن — ابدأ بـ LOB inline (< 4000) ثم LOB index/segment | recall ≥ 99% على LOB inline؛ الضغط: رفض صريح موثَّق حتى يُنفَّذ |
 | **5** | **إغلاق g** | في `lab_values_match_oracle_dump_byte_for_byte`: فكّ `\XXXX` (UNISTR escape) للنصوص العربية، وأضف T_CL_DEPT/T_CL_EMP عبر `read_cluster` | 141,613 / 141,613 قيمة |
 | **6** | **وضع بدون قاموس** (M4 — الميزة الفارقة) | `OBJ_<objd>` / `COL_<n>` من REQ-004، استدلال النوع من البايتات مع hold-out | دقة استدلال النوع ≥ 95% على مخططات لم تُستخدم في الضبط |
 | 7 | Windows release | `cargo build --release --target x86_64-pc-windows-msvc` في CI وإرفاق `odr.exe` بـ Release | يعمل على ملف ذهبي على Windows |
 
-**أول 30 دقيقة للوكيل القادم:** runbook §1–§2 → `gh pr list` (تأكد أن #10 الوحيد المفتوح) → تنزيل golden (runbook §4 البديل الأسرع، 62 MB؛ ملف `.sha256` يحمل مساراً مطلقاً — قارن الهاش يدوياً) → البوابات + `golden_lab` **11/11** (مع `ODR_GOLDEN2` من Release `golden-21c-20261021`) + `golden_cli` **6/6** → ابدأ بالخطوة 4 (LOB) أو 11g XE.
+**أول 30 دقيقة للوكيل القادم:** runbook §1–§2 → `gh pr list` (تأكد أن #10 الوحيد المفتوح) → تنزيل golden (runbook §4 البديل الأسرع، 62 MB؛ ملف `.sha256` يحمل مساراً مطلقاً — قارن الهاش يدوياً) → البوابات + `golden_lab` **11/11** (مع `ODR_GOLDEN2` من Release `golden-21c-20261021`) + `golden_cli` **7/7** → خطة اليوم في `docs/handover/2026-10-21_session_plan.md` (D ثم E)، وإلا الخطوة 4 (LOB).
 
 ---
 

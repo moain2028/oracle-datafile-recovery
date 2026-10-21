@@ -156,6 +156,18 @@ until docker logs odr-xe21 2>&1 | grep -q "DATABASE IS READY TO USE"; do sleep 1
 ```
 19c الرسمية (`container-registry.oracle.com/database/enterprise:19.3.0.0`) تبقى تحتاج رخصة المالك.
 
+**11g XE (11.2.0.2، غير-CDB) — نُفِّذ 2026-10-21، golden `golden-11g-20261021` (run `20261021T102638Z`):**
+```bash
+docker volume create odr-xe11
+docker run -d --name odr-xe11 --network host --shm-size=1g -e ORACLE_PASSWORD=OdrLab2026x \
+  -v odr-xe11:/u01/app/oracle/oradata gvenzl/oracle-xe:11-slim
+until docker logs odr-xe11 2>&1 | grep -q "DATABASE IS READY TO USE"; do sleep 10; done
+```
+- لا PDB: شغّل نسخاً معدَّلة من `lab/sql/*.sql` (لا تعدّل الأصل) بأربعة تغييرات فقط: احذف كل `ALTER SESSION SET CONTAINER = &1;`، المسار `/u01/app/oracle/oradata/odr/` بدل `/opt/oracle/oradata/odr/`، `banner` بدل `banner_full` في `v$version` (مع `ROWNUM = 1`)، وسطر الـ pdb يصبح `SELECT 'pdb|NONCDB|0|' || dbid FROM v$database;`. `ORACLE_CHARACTERSET` غير مدعوم في صورة 11 (الافتراضي AL32UTF8).
+- ملف SYSTEM اسمه `XE_system.dbf` (file#1 حقيقي؛ ليس PDB) — اختبار `lab2` يتعرف عليه من `kcvfh` + bootstrap لا من الاسم.
+- بعد `SHUTDOWN IMMEDIATE` للتصدير لا تعيد صور gvenzl تشغيل القاعدة: `docker restart odr-xe11`.
+- النتيجة: نفس الكود بلا تغيير — `odr dict` 0 مشاكل، `lab2_second_version_reads_like_oracle` يمر مع `ODR_GOLDEN2=<11g>`.
+
 ## 8. ملاحظات القرص والحاوية (حالة نهاية الجلسة 2026-10-18)
 - القرص 27/29 GB: `/home/user/docker-data` 24 GB (صورة 10 GB + حجم oradata) · `target/` 1.9 GB. عند الضيق: `cargo clean` أولاً، ثم `docker rm -f odr-oracle && docker volume rm odr-oradata` (المجموعة الذهبية محفوظة في Release).
 - بعد `SHUTDOWN IMMEDIATE` للتصدير تبقى الحاوية `unhealthy`: `docker restart odr-oracle` ثم انتظر `healthy` (≈ 3 دقائق).

@@ -99,6 +99,118 @@ pub enum Layout {
     Assm,
 }
 
+/// A structural invariant violated by a block that passed its checksum
+/// (see [`DataBlock::structural_check`], LV-062). Every variant names the
+/// evidence so a forensic report can cite it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[non_exhaustive]
+pub enum StructuralFault {
+    /// The block's own `rdba` does not match where it was read from: a
+    /// misdirected write or a swapped block (Oracle's "block mismatch").
+    Misplaced {
+        /// Block number in the `kcbh` header.
+        header_block: u32,
+        /// Block number of the position it was read from.
+        found_at: u32,
+    },
+    /// A row's lock byte points past the ITL array (`kdbchk` 6101).
+    LockOutsideItl {
+        /// Row-directory slot.
+        slot: u16,
+        /// The lock byte.
+        lock: u8,
+    },
+    /// An ITL declares fewer locked rows than reference it (`kdbchk` 6108).
+    ItlLockCount {
+        /// ITL index (1-based, as in the row's lock byte).
+        itl: u16,
+        /// `lck` in the ITL entry.
+        declared: u16,
+        /// Rows whose lock byte equals `itl`.
+        referenced: u16,
+    },
+    /// The free-slot chain from `frre` is broken (`kdbchk` 6106).
+    FreeChain {
+        /// Slot where the chain left the directory, cycled or hit a used slot.
+        slot: u16,
+    },
+    /// A slot that does not decode although its flag byte does not say
+    /// *deleted* (every undecodable slot in a healthy block is a reused
+    /// deleted stub, LV-058).
+    UndecodableLiveRow {
+        /// The slot.
+        slot: u16,
+        /// Raw flag byte.
+        flag: u8,
+    },
+    /// An unused directory entry is not reachable from `frre`.
+    UnusedSlotOffChain {
+        /// The slot.
+        slot: u16,
+    },
+    /// Two live rows share bytes.
+    RowOverlap {
+        /// Block offset of the second row.
+        offset: usize,
+    },
+    /// A live row lies outside `[kdbh + fseo, block − tail)`.
+    RowOutsideHeap {
+        /// Block offset.
+        offset: usize,
+        /// Row length.
+        len: usize,
+    },
+    /// `avsp` claims more free space than the rows leave (`kdbchk` 6110).
+    AvailableSpace {
+        /// `kdbhavsp`.
+        avsp: u16,
+        /// Upper bound from the rows.
+        max: usize,
+    },
+}
+
+impl std::fmt::Display for StructuralFault {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Misplaced {
+                header_block,
+                found_at,
+            } => write!(
+                f,
+                "header says block {header_block} but it was read at block {found_at}"
+            ),
+            Self::LockOutsideItl { slot, lock } => {
+                write!(f, "slot {slot} lock byte {lock} exceeds ITL count")
+            }
+            Self::ItlLockCount {
+                itl,
+                declared,
+                referenced,
+            } => write!(
+                f,
+                "ITL {itl} declares {declared} locked rows but {referenced} rows reference it"
+            ),
+            Self::FreeChain { slot } => write!(f, "free-slot chain broken at slot {slot}"),
+            Self::UndecodableLiveRow { slot, flag } => {
+                write!(
+                    f,
+                    "slot {slot} (flag {flag:#04x}, not deleted) does not decode"
+                )
+            }
+            Self::UnusedSlotOffChain { slot } => {
+                write!(f, "unused slot {slot} not on the free chain")
+            }
+            Self::RowOverlap { offset } => write!(f, "live rows overlap at offset {offset:#x}"),
+            Self::RowOutsideHeap { offset, len } => {
+                write!(f, "row at {offset:#x} (+{len}) outside the row heap")
+            }
+            Self::AvailableSpace { avsp, max } => {
+                write!(f, "avsp {avsp} exceeds the space the rows leave ({max})")
+            }
+        }
+    }
+}
+
 /// A row-directory slot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Slot {
@@ -322,6 +434,152 @@ impl<'a> DataBlock<'a> {
                 parse_piece(heap, off, i, self.order, self.piece_format()).map(Some)
             }
         }
+    }
+
+    /// Structural validation **above** the checksum (LV-062): the invariants
+    /// a healthy Oracle data block always satisfies, independent of
+    /// `kcbh` checksum/tail. A block whose bytes were altered and whose
+    /// checksum was recomputed ("forge") passes [`crate::block::classify`]
+    /// yet may break one of these. Only invariants that held on **every**
+    /// Valid data block of the 26ai golden files (17,683 SYSTEM + 394 ASSM +
+    /// 6 MSSM + 1 bigfile) are used; the published `kdbchk` equalities
+    /// (6110 `avsp == dtl − used − fsc`, 6111 `tosp`, exact 6108 lock
+    /// counts) do **not** hold on real blocks after row updates and are
+    /// deliberately *not* enforced.
+    ///
+    /// Checks (named after the closest `kdbchk` code):
+    /// * **6101** — every stored row's `lock` byte is `≤ itc` (0 = unlocked);
+    /// * **live-undecodable** — a slot that fails to decode must carry `D`;
+    /// * **6108'** — per ITL, `lck ≥` rows that reference it (Oracle keeps
+    ///   `lck` as an upper bound after partial cleanout, never below);
+    /// * **6106'** — the free-slot chain from `frre` visits only unused slots,
+    ///   stays inside the directory, has no cycle and ends in `0xFFFF`; and
+    ///   every unused slot is on that chain;
+    /// * **overlap** — live (non-deleted) rows never overlap each other and
+    ///   lie inside `[kdbh+fseo, block−tail)`;
+    /// * **6110'** — `avsp ≤ dtl − dir − Σ live max(len, 9)` (deleted stubs
+    ///   are free space to Oracle; `avsp` can be stale-low, never too high).
+    ///
+    /// Returns the first violated rule, or `None` if the block is
+    /// structurally consistent. Never panics.
+    #[allow(clippy::too_many_lines)] // one pass over the directory; each rule is a few lines
+    pub fn structural_check(&self) -> Option<StructuralFault> {
+        let itc = self.ktb.itl_count;
+        let heap_end = self.block.len().saturating_sub(TAIL_LEN);
+        let heap_start = self.kdbh_off.saturating_add(usize::from(self.kdbh.fseo));
+        let mut locks_by_itl: Vec<u16> = vec![0; usize::from(itc).saturating_add(1)];
+        let mut live: Vec<(usize, usize)> = Vec::new();
+        let mut used_min9: usize = 0;
+        let mut unused: Vec<u16> = Vec::new();
+        for i in 0..self.kdbh.nrow {
+            match self.slot(i) {
+                Ok(Slot::Unused) => unused.push(i),
+                Ok(Slot::Row(o)) => {
+                    // An undecodable slot is normal only for a deleted stub
+                    // whose bytes were reused (LV-058): on 2,254 such slots
+                    // in healthy 26ai blocks the flag byte always carries
+                    // `D` and the lock byte is always `≤ itc`. A slot that
+                    // does not decode and breaks either is a fault.
+                    let Ok(Some(p)) = self.row(i) else {
+                        let flag = self.block.get(o).copied().unwrap_or(0);
+                        let lock = self.block.get(o.saturating_add(1)).copied().unwrap_or(0);
+                        if flag & super::flag::D == 0 {
+                            return Some(StructuralFault::UndecodableLiveRow { slot: i, flag });
+                        }
+                        if u16::from(lock) > itc {
+                            return Some(StructuralFault::LockOutsideItl { slot: i, lock });
+                        }
+                        continue;
+                    };
+                    if u16::from(p.lock) > itc {
+                        return Some(StructuralFault::LockOutsideItl {
+                            slot: i,
+                            lock: p.lock,
+                        });
+                    }
+                    if let Some(c) = locks_by_itl.get_mut(usize::from(p.lock)) {
+                        *c = c.saturating_add(1);
+                    }
+                    // Deleted stubs are free space to Oracle (their bytes
+                    // may already be reused, LV-058); only live rows count.
+                    if !p.is_deleted() {
+                        used_min9 = used_min9.saturating_add(p.len.max(9));
+                        live.push((o, p.len));
+                    }
+                }
+                Err(_) => {}
+            }
+        }
+        for i in 1..=itc {
+            let Ok(itl) = self.ktb.itl(self.block, self.order, i.saturating_sub(1)) else {
+                continue;
+            };
+            let referenced = locks_by_itl.get(usize::from(i)).copied().unwrap_or(0);
+            if itl.locked_rows < referenced {
+                return Some(StructuralFault::ItlLockCount {
+                    itl: i,
+                    declared: itl.locked_rows,
+                    referenced,
+                });
+            }
+        }
+        // Free-slot chain.
+        let dir = self
+            .kdbh_off
+            .saturating_add(KDBH_LEN)
+            .saturating_add(4 * usize::from(self.kdbh.ntab));
+        let mut on_chain: Vec<u16> = Vec::new();
+        let mut cur = self.kdbh.frre;
+        let mut hops: u32 = 0;
+        while cur != 0xFFFF {
+            if cur >= self.kdbh.nrow || on_chain.contains(&cur) || hops > u32::from(u16::MAX) {
+                return Some(StructuralFault::FreeChain { slot: cur });
+            }
+            if !matches!(self.slot(cur), Ok(Slot::Unused)) {
+                return Some(StructuralFault::FreeChain { slot: cur });
+            }
+            on_chain.push(cur);
+            hops = hops.saturating_add(1);
+            let Ok(next) = read_u16(
+                self.block,
+                dir.saturating_add(2 * usize::from(cur)),
+                self.order,
+            ) else {
+                return Some(StructuralFault::FreeChain { slot: cur });
+            };
+            cur = next;
+        }
+        if let Some(&s) = unused.iter().find(|s| !on_chain.contains(s)) {
+            return Some(StructuralFault::UnusedSlotOffChain { slot: s });
+        }
+        // Live rows: inside the heap, no overlap.
+        live.sort_unstable();
+        for w in live.windows(2) {
+            if let [(o1, l1), (o2, _)] = *w
+                && o1.saturating_add(l1) > o2
+            {
+                return Some(StructuralFault::RowOverlap { offset: o2 });
+            }
+        }
+        if let Some(&(o, l)) = live
+            .iter()
+            .find(|&&(o, l)| o < heap_start || o.saturating_add(l) > heap_end)
+        {
+            return Some(StructuralFault::RowOutsideHeap { offset: o, len: l });
+        }
+        // avsp upper bound.
+        let dtl = heap_end.saturating_sub(self.kdbh_off);
+        let dir_len = KDBH_LEN
+            .saturating_add(4 * usize::from(self.kdbh.ntab))
+            .saturating_add(2 * usize::from(self.kdbh.nrow));
+        let free_max = dtl.saturating_sub(dir_len).saturating_sub(used_min9);
+        if usize::from(self.kdbh.avsp) > free_max {
+            return Some(StructuralFault::AvailableSpace {
+                avsp: self.kdbh.avsp,
+                max: free_max,
+            });
+        }
+        None
     }
 
     /// Iterate all slots: `(slot, result)`; unused slots are skipped. An error

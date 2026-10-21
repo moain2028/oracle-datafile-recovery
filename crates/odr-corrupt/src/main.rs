@@ -38,6 +38,9 @@ struct Cli {
     /// truncate:BYTES · swap:N · holes:N:LEN · forge:N
     #[arg(long = "op", required = true)]
     ops: Vec<String>,
+    /// Restrict block-granular ops to blocks FIRST:LAST (inclusive).
+    #[arg(long)]
+    blocks: Option<String>,
 }
 
 fn num(s: Option<&str>, what: &str) -> Result<u64> {
@@ -100,10 +103,20 @@ fn main() -> Result<()> {
     if same {
         bail!("output must differ from input (evidence is never modified)");
     }
+    let blocks = match cli.blocks.as_deref() {
+        None => None,
+        Some(r) => {
+            let (a, b) = r
+                .split_once(':')
+                .with_context(|| format!("--blocks '{r}' must be FIRST:LAST"))?;
+            Some((num(Some(a), "first block")?, num(Some(b), "last block")?))
+        }
+    };
     let spec = Spec {
         block_size: cli.block_size,
         seed: cli.seed,
         ops: cli.ops.iter().map(|s| parse_op(s)).collect::<Result<_>>()?,
+        blocks,
     };
     let input =
         std::fs::read(&cli.input).with_context(|| format!("reading {}", cli.input.display()))?;

@@ -128,6 +128,7 @@ sha256sum -c odr_golden.sha256 && tar -xzf odr_golden_26ai_*.tar.gz && ls
 cargo build --release -p odr-cli -p odr-corrupt
 G=$PWD/lab/out/golden/20261018T080131Z; SYS=$G/datafiles/FREE_FREEPDB1_system01.dbf; A=$G/datafiles/odr_odr_assm01.dbf
 mkdir -p /tmp/dmg
+# --blocks FIRST:LAST يستهدف امتداد الجدول (T_JOURNAL في assm: 3204:3327) حتى تصيب كل عملية الجدول فعلاً
 for op in zero:200 bitrot:400 holes:20:16 torn:200 wipe-header "ransom:16384:8192:10" forge:50 swap:20; do
   n=$(echo "$op" | tr ':' '_'); ./target/release/odr-corrupt --input $A --output /tmp/dmg/$n.dbf --block-size 8192 --seed 7 --op "$op"
 done
@@ -143,6 +144,17 @@ print('precision', len(v&clean)/len(v), 'recall', len(v)/len(clean), 'wrong', le
   --assume "/tmp/dmg/wipe-header.dbf=file:16,ts:7,rfile:16,bs:8192"
 ```
 الاختباران الذهبيان `damaged_copies_never_yield_a_wrong_verified_cell` و`wiped_header_requires_assume_and_downgrades_to_inferred` يفعلان ذلك آلياً داخل العملية (`odr_corrupt::apply`) — أي نمط جديد يُضاف هناك، لا كتجربة يدوية فقط.
+
+## 7b. مختبر إصدار ثانٍ بلا رخصة (2026-10-21)
+`gvenzl/oracle-xe:21-slim` (Docker Hub، لا يحتاج قبول رخصة؛ ≈ 2 GB) — ونفس الصورة متوفرة لـ `11-slim` و`18-slim`:
+```bash
+docker volume create odr-xe21
+docker run -d --name odr-xe21 --network host --shm-size=1g -e ORACLE_PASSWORD=OdrLab2026x \
+  -e ORACLE_CHARACTERSET=AL32UTF8 -v odr-xe21:/opt/oracle/oradata gvenzl/oracle-xe:21-slim
+until docker logs odr-xe21 2>&1 | grep -q "DATABASE IS READY TO USE"; do sleep 10; done
+# PDB الافتراضية XEPDB1؛ sqlplus داخل الحاوية: docker exec -i odr-xe21 sqlplus -s / as sysdba
+```
+19c الرسمية (`container-registry.oracle.com/database/enterprise:19.3.0.0`) تبقى تحتاج رخصة المالك.
 
 ## 8. ملاحظات القرص والحاوية (حالة نهاية الجلسة 2026-10-18)
 - القرص 27/29 GB: `/home/user/docker-data` 24 GB (صورة 10 GB + حجم oradata) · `target/` 1.9 GB. عند الضيق: `cargo clean` أولاً، ثم `docker rm -f odr-oracle && docker volume rm odr-oradata` (المجموعة الذهبية محفوظة في Release).

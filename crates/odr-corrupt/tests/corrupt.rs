@@ -64,6 +64,7 @@ fn deterministic_and_input_untouched() {
             block_size: BS as u64,
             seed: 7,
             ops: all_ops(),
+            blocks: None,
         };
         let (a, ma) = apply(&input, &spec).unwrap();
         let (b, mb) = apply(&input, &spec).unwrap();
@@ -89,6 +90,7 @@ fn each_pattern_has_the_expected_effect() {
                 block_size: BS as u64,
                 seed: 3,
                 ops,
+                blocks: None,
             },
         )
         .unwrap()
@@ -144,6 +146,7 @@ fn forged_blocks_still_pass_checksum() {
                 block_size: BS as u64,
                 seed: 5,
                 ops: vec![Op::Forge { count: 4 }],
+                blocks: None,
             },
         )
         .unwrap();
@@ -166,6 +169,7 @@ fn bad_specs_are_rejected() {
         block_size,
         seed: 1,
         ops,
+        blocks: None,
     };
     assert!(apply(&input, &spec(1000, vec![Op::Zero { count: 1 }])).is_err());
     assert!(apply(&input[..100], &spec(8192, vec![Op::Zero { count: 1 }])).is_err());
@@ -182,7 +186,12 @@ proptest! {
         let input = img(48, ord);
         let ops: Vec<Op> = all_ops().into_iter().enumerate()
             .filter(|(i, _)| mask & (1 << i) != 0).map(|(_, o)| o).collect();
-        let spec = Spec { block_size: BS as u64, seed, ops };
+        let spec = Spec {
+            block_size: BS as u64,
+            seed,
+            ops,
+            blocks: None,
+        };
         let (o, m) = apply(&input, &spec).unwrap();
         prop_assert!(diff_covered(&input, &o, &m));
         prop_assert_eq!(apply(&input, &spec).unwrap().0, o);

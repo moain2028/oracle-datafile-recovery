@@ -263,6 +263,7 @@ fn damaged_copies_never_yield_a_wrong_verified_cell() {
             block_size: 8192,
             seed: 7,
             ops: vec![op],
+            blocks: None,
         };
         let (bytes, manifest) = apply(&clean_bytes, &spec).unwrap();
         assert!(!manifest.changes.is_empty(), "{name}: nothing damaged");
@@ -331,6 +332,218 @@ fn damaged_copies_never_yield_a_wrong_verified_cell() {
     let _ = std::fs::remove_dir_all(&tmp);
 }
 
+/// Split CSV text into records, honouring quoted fields that contain
+/// newlines (rejected rows may carry raw text). Returns the raw record text.
+fn csv_records(text: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let (mut start, mut quoted) = (0usize, false);
+    for (i, ch) in text.char_indices() {
+        match ch {
+            '"' => quoted = !quoted,
+            '\n' if !quoted => {
+                out.push(text[start..i].trim_end_matches('\r'));
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    if start < text.len() {
+        out.push(&text[start..]);
+    }
+    out
+}
+
+/// LV-062 — *a valid checksum is not proof of content.*
+///
+/// Damage aimed at `T_JOURNAL`'s first extent (blocks 3204..=3327 of the
+/// ASSM file) so every pattern hits the table:
+/// * **swap** (misdirected writes): every swapped block is rejected as
+///   `block structure: header says block …` — precision 1.0, recall drops;
+/// * **forge** (byte changed, `chkval` recomputed): every block whose
+///   row directory / lengths / lock bytes were hit is rejected as
+///   `block structure`; a forged byte *inside a column value* is detected
+///   only when the value stops decoding (bad UTF-8, NUMBER/DATE out of
+///   range) — the residue is measured and bounded here, never hidden;
+/// * **ransom** (`--assume`, encrypted header + every 10th 8 KiB chunk):
+///   encrypted blocks are `integrity: Foreign`, the rest inferred; recall
+///   ≥ 0.85, no wrong value.
+///
+/// Accounting is exact for all three: verified + inferred + rejected ==
+/// 20,000 (ransom: minus rows of encrypted blocks).
+#[test]
+fn forged_swapped_and_encrypted_copies_are_rejected_not_believed() {
+    use odr_corrupt::{Op, Spec, apply};
+    let Some(g) = golden() else { return };
+    let tmp = std::env::temp_dir().join(format!("odr_cli_forge_{}", std::process::id()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    let clean_path = g.join("datafiles/odr_odr_assm01.dbf");
+    let clean_bytes = std::fs::read(&clean_path).unwrap();
+    let clean_out = tmp.join("clean");
+    assert!(
+        extract_journal(&g, &clean_path, &clean_out, &[])
+            .status
+            .success()
+    );
+    let truth = csv_rows(&clean_out.join("verified.csv"));
+    assert_eq!(truth.len(), 20000);
+    let report_of = |dir: &std::path::Path| -> serde_json::Value {
+        serde_json::from_str(&std::fs::read_to_string(dir.join("report.json")).unwrap()).unwrap()
+    };
+    let rejected_blocks = |dir: &std::path::Path| -> std::collections::HashSet<u64> {
+        csv_records(&std::fs::read_to_string(dir.join("rejected.csv")).unwrap())
+            .into_iter()
+            .skip(1)
+            .map(|r| r.split(',').nth(1).unwrap().parse().unwrap())
+            .collect()
+    };
+
+    // --- swap: 20 pairs inside the extent, 3 seeds.
+    for seed in [7u64, 8, 9] {
+        let spec = Spec {
+            block_size: 8192,
+            seed,
+            ops: vec![Op::Swap { count: 20 }],
+            blocks: Some((3204, 3327)),
+        };
+        let (bytes, manifest) = apply(&clean_bytes, &spec).unwrap();
+        let dmg = tmp.join(format!("swap_{seed}.dbf"));
+        std::fs::write(&dmg, &bytes).unwrap();
+        let out_dir = tmp.join(format!("swap_{seed}"));
+        let out = extract_journal(&g, &dmg, &out_dir, &[]);
+        assert_eq!(out.status.code(), Some(2), "swap {seed}");
+        let verified = csv_rows(&out_dir.join("verified.csv"));
+        assert!(
+            verified.iter().all(|l| truth.contains(l)),
+            "swap {seed}: wrong verified"
+        );
+        let rep = report_of(&out_dir);
+        let rejected = rep["rows"]["rejected"].as_u64().unwrap() as usize;
+        assert_eq!(verified.len() + rejected, 20000, "swap {seed}: accounting");
+        let hit: std::collections::HashSet<u64> =
+            manifest.changes.iter().map(|c| c.block).collect();
+        let rej = rejected_blocks(&out_dir);
+        let missed: Vec<_> = hit.iter().filter(|b| !rej.contains(b)).collect();
+        assert!(
+            missed.is_empty(),
+            "swap {seed}: swapped blocks not rejected {missed:?}"
+        );
+        let txt = std::fs::read_to_string(out_dir.join("rejected.csv")).unwrap();
+        assert!(
+            txt.contains("block structure: header says block"),
+            "swap {seed}"
+        );
+    }
+
+    // --- forge: 60 blocks inside the extent, 3 seeds.
+    let (mut forged_blocks, mut detected_blocks, mut wrong_rows) = (0usize, 0usize, 0usize);
+    for seed in [7u64, 8, 9] {
+        let spec = Spec {
+            block_size: 8192,
+            seed,
+            ops: vec![Op::Forge { count: 60 }],
+            blocks: Some((3204, 3327)),
+        };
+        let (bytes, manifest) = apply(&clean_bytes, &spec).unwrap();
+        let dmg = tmp.join(format!("forge_{seed}.dbf"));
+        std::fs::write(&dmg, &bytes).unwrap();
+        let out_dir = tmp.join(format!("forge_{seed}"));
+        let out = extract_journal(&g, &dmg, &out_dir, &[]);
+        assert!(matches!(out.status.code(), Some(0 | 2)), "forge {seed}");
+        let verified = csv_rows(&out_dir.join("verified.csv"));
+        let rep = report_of(&out_dir);
+        let rejected = rep["rows"]["rejected"].as_u64().unwrap() as usize;
+        assert_eq!(verified.len() + rejected, 20000, "forge {seed}: accounting");
+        let hit: std::collections::HashSet<u64> = manifest
+            .changes
+            .iter()
+            .filter(|c| c.what == "forge_value")
+            .map(|c| c.block)
+            .collect();
+        let rej = rejected_blocks(&out_dir);
+        forged_blocks += hit.len();
+        detected_blocks += hit.iter().filter(|b| rej.contains(b)).count();
+        let wrong = verified.iter().filter(|l| !truth.contains(*l)).count();
+        wrong_rows += wrong;
+        // A wrong verified row may only come from a forged block whose
+        // forged byte sits inside a column value (checked by block id).
+        for l in verified.iter().filter(|l| !truth.contains(*l)) {
+            let b: u64 = l.split(',').nth(1).unwrap().parse().unwrap();
+            assert!(
+                hit.contains(&b),
+                "forge {seed}: wrong row from an untouched block {l}"
+            );
+        }
+        // Untouched blocks are never rejected (no false positives).
+        let fp: Vec<_> = rej.iter().filter(|b| !hit.contains(b)).collect();
+        assert!(fp.is_empty(), "forge {seed}: false positives {fp:?}");
+    }
+    // Measured 2026-10-21 (26ai, seeds 7/8/9, 144 forged blocks): 39 blocks
+    // rejected structurally, 110 wrong rows from value-interior forgeries
+    // out of 54,000 verified rows (0.2 %). The bound below is the honest
+    // ceiling of what single-block structural checks can do; lowering it
+    // needs cross-block evidence (indexes / undo), tracked as M6.
+    assert!(
+        detected_blocks * 100 >= forged_blocks * 20,
+        "forge detection {detected_blocks}/{forged_blocks}"
+    );
+    assert!(
+        wrong_rows <= 150,
+        "forge: {wrong_rows} wrong verified rows in 3 seeds"
+    );
+
+    // --- ransom with --assume.
+    let spec = Spec {
+        block_size: 8192,
+        seed: 7,
+        ops: vec![Op::Ransom {
+            lead_bytes: 16384,
+            chunk: 8192,
+            every: 10,
+        }],
+        blocks: None,
+    };
+    let (bytes, manifest) = apply(&clean_bytes, &spec).unwrap();
+    let dmg = tmp.join("ransom.dbf");
+    std::fs::write(&dmg, &bytes).unwrap();
+    let out_dir = tmp.join("ransom");
+    let assume = format!("{}=file:16,ts:7,rfile:16,bs:8192", dmg.display());
+    let out = extract_journal(&g, &dmg, &out_dir, &["--assume".to_owned(), assume]);
+    assert!(
+        matches!(out.status.code(), Some(0 | 2)),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(csv_rows(&out_dir.join("verified.csv")).is_empty());
+    let inferred = csv_rows(&out_dir.join("inferred.csv"));
+    let tag = ",file identity from --assume (header destroyed)";
+    for l in &inferred {
+        let body = l.strip_suffix(tag).unwrap();
+        assert!(truth.contains(body), "ransom: wrong inferred value {body}");
+    }
+    let rep = report_of(&out_dir);
+    let rejected = rep["rows"]["rejected"].as_u64().unwrap() as usize;
+    // Rows whose block the manifest says was encrypted: unreadable by any
+    // tool. An encrypted block whose random format nibble happens to be 2
+    // classifies TailMismatch rather than Foreign — still an integrity skip.
+    let encrypted: std::collections::HashSet<u64> =
+        manifest.changes.iter().map(|c| c.block).collect();
+    let encrypted_rows = truth
+        .iter()
+        .filter(|l| encrypted.contains(&l.split(',').nth(1).unwrap().parse::<u64>().unwrap()))
+        .count();
+    assert_eq!(
+        inferred.len() + rejected + encrypted_rows,
+        20000,
+        "ransom: accounting"
+    );
+    #[allow(clippy::cast_precision_loss)]
+    let recall = inferred.len() as f64 / 20000.0;
+    assert!(recall >= 0.85, "ransom recall {recall}");
+    let skipped = rep["skipped_blocks"].as_object().unwrap();
+    assert!(skipped.contains_key("integrity: Foreign"), "{skipped:?}");
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
 /// LV-060 — *destroyed header ⇒ no identity ⇒ refuse; `--assume` ⇒ inferred.*
 ///
 /// With blocks 0..=1 wiped the file cannot prove file#/tablespace. ODR must
@@ -356,6 +569,7 @@ fn wiped_header_requires_assume_and_downgrades_to_inferred() {
         block_size: 8192,
         seed: 7,
         ops: vec![Op::WipeHeader],
+        blocks: None,
     };
     let (bytes, _) = apply(&std::fs::read(&clean_path).unwrap(), &spec).unwrap();
     let dmg = tmp.join("wipe-header.dbf");

@@ -109,6 +109,48 @@ fn lab_every_block_classifies_valid() {
     }
 }
 
+/// LV-062 — *the structural check has zero false positives on real data.*
+///
+/// Every `Valid` table data block of the four golden files (26ai: 17,683 in
+/// SYSTEM incl. 2,254 reused deleted stubs and 722 free-slot chains, 394
+/// ASSM, 6 MSSM, 1 bigfile) must pass `DataBlock::structural_check`. If a
+/// future rule fails here it is wrong, not the file.
+#[test]
+fn lab_structural_check_passes_every_healthy_block() {
+    let Some(g) = golden() else { return };
+    let mut checked = 0usize;
+    for f in [
+        "FREE_FREEPDB1_system01",
+        "odr_odr_assm01",
+        "odr_odr_mssm01",
+        "odr_odr_big01",
+    ] {
+        let img = read_file(&g.join(format!("datafiles/{f}.dbf")));
+        let mut faults = Vec::new();
+        for i in 1..img.len() / BS {
+            let b = block(&img, i as u32);
+            if classify(b, BS, ByteOrder::Little) != BlockStatus::Valid {
+                continue;
+            }
+            let Ok(h) = odr_core::block::BlockHeader::parse(b, ByteOrder::Little) else {
+                continue;
+            };
+            if h.type_byte != 0x06 {
+                continue;
+            }
+            let Ok(db) = DataBlock::parse(b, ByteOrder::Little) else {
+                continue;
+            };
+            checked += 1;
+            if let Some(fault) = db.structural_check() {
+                faults.push((i, fault));
+            }
+        }
+        assert!(faults.is_empty(), "{f}: {faults:?}");
+    }
+    assert!(checked >= 18_000, "checked {checked} data blocks");
+}
+
 #[test]
 fn lab_bootstrap_segment_and_catalog() {
     let Some(g) = golden() else { return };

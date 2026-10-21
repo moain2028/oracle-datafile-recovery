@@ -17,8 +17,8 @@ use crate::bytes::ByteOrder;
 use crate::error::DecodeError;
 use crate::row::assemble::MAX_PIECES;
 use crate::row::{
-    AssembleError, ClusterPart, DataBlock, PieceSource, Provenance, RowPiece, assemble,
-    cluster_columns,
+    AssembleError, ClusterPart, DataBlock, PieceSource, Provenance, RowPiece, StructuralFault,
+    assemble, cluster_columns,
 };
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
@@ -56,6 +56,11 @@ pub struct RawRow {
     /// but [`BlockStatus::Valid`] means the bytes may be altered even though
     /// they decode: the caller must not label such values *verified*.
     pub block_status: BlockStatus,
+    /// Structural fault of the head block above the checksum (LV-062):
+    /// `Some` means the block passed `classify` but violates an invariant
+    /// every healthy block satisfies — a forged or mis-written block. Such
+    /// a row is never *verified* either.
+    pub structural: Option<StructuralFault>,
 }
 
 /// Why a row could not be produced.
@@ -74,6 +79,9 @@ pub enum RowError {
     /// never dropped, so every directory slot of a damaged block is
     /// accounted for.
     Integrity(BlockStatus),
+    /// Same as [`Self::Integrity`] for a block that failed
+    /// [`DataBlock::structural_check`] (LV-062).
+    Structural(StructuralFault),
 }
 
 /// Output of a segment read.
@@ -221,7 +229,7 @@ fn read_impl<S: BlockSource + ?Sized>(
         // as "not a data block (type 0x96)" from a garbage byte (ransom
         // lab) and never with rows silently dropped (torn lab: flag bytes
         // 0x15 `D L N` and 0x0B `F P N` hid two rows).
-        let trusted = status == BlockStatus::Valid;
+        let mut trusted = status == BlockStatus::Valid;
         let Ok(h) = BlockHeader::parse(&bytes, order) else {
             out.skipped.push((
                 addr,
@@ -262,6 +270,29 @@ fn read_impl<S: BlockSource + ?Sized>(
             out.skipped.push((addr, Skip::ForeignObject(db.ktb.objd)));
             continue;
         }
+        // LV-062: a block with a valid checksum can still be inconsistent
+        // (forged byte + recomputed chkval, misdirected write). Structural
+        // faults demote the whole block to untrusted, exactly like a
+        // checksum failure: every slot is reported, none is verified.
+        let structural = if trusted {
+            // Position check first: the header's rdba must name the block
+            // we read (swap lab: 20 misdirected blocks decoded perfectly
+            // and reported their *header* address).
+            let (_, header_block) = h.rdba.split(scheme);
+            if header_block == block {
+                db.structural_check()
+            } else {
+                Some(StructuralFault::Misplaced {
+                    header_block,
+                    found_at: block,
+                })
+            }
+        } else {
+            None
+        };
+        if structural.is_some() {
+            trusted = false;
+        }
         out.data_blocks = out.data_blocks.saturating_add(1);
         let rdba = h.rdba.0;
         // A trusted block iterates its used slots; an untrusted one iterates
@@ -280,7 +311,15 @@ fn read_impl<S: BlockSource + ?Sized>(
                 scn: h.scn.0,
             };
             // Reason used for every flag-based skip inside an untrusted block.
-            let integrity = || Err((prov, RowError::Integrity(status)));
+            let integrity = || {
+                Err((
+                    prov,
+                    match structural {
+                        Some(f) => RowError::Structural(f),
+                        None => RowError::Integrity(status),
+                    },
+                ))
+            };
             let piece = match r {
                 Ok(Some(p)) => p,
                 Ok(None) => {
@@ -344,6 +383,7 @@ fn read_impl<S: BlockSource + ?Sized>(
                             provenance: prov,
                             rowid_row: slot,
                             block_status: worst(status, chain_status(&chain, order)),
+                            structural,
                             columns: a.columns,
                             pieces: if a.pieces.len() > 1 {
                                 a.pieces
@@ -386,6 +426,7 @@ fn read_impl<S: BlockSource + ?Sized>(
                                 provenance: prov,
                                 rowid_row,
                                 block_status: status,
+                                structural,
                                 columns: cols.into_iter().map(|c| c.map(<[u8]>::to_vec)).collect(),
                                 pieces: Vec::new(),
                             })),

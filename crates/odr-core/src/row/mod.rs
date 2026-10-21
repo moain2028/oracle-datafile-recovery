@@ -18,7 +18,7 @@ pub mod piece;
 
 pub use assemble::{AssembleError, AssembledRow, PieceSource, assemble};
 pub use cluster::{ClusterPart, cluster_columns};
-pub use kdb::{DataBlock, Layout, Slot, kdbh_flag};
+pub use kdb::{DataBlock, Layout, Slot, StructuralFault, kdbh_flag};
 pub use ktb::data_object_id;
 pub use piece::PieceFormat;
 

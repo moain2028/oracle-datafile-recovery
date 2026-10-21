@@ -368,12 +368,21 @@ enum Layer {
     Rejected(String),
 }
 
-fn classify(cells: &[Cell], block_status: odr_core::block::BlockStatus) -> Layer {
+fn classify(
+    cells: &[Cell],
+    block_status: odr_core::block::BlockStatus,
+    structural: Option<odr_core::row::StructuralFault>,
+) -> Layer {
     // LV-059: a row from a block that fails its checksum / tail check can
     // decode perfectly and still hold altered bytes (bitrot lab: 3 rows of
     // 20,000 with one wrong character). It is never *verified*.
     if block_status != odr_core::block::BlockStatus::Valid {
         return Layer::Rejected(format!("block integrity: {block_status:?}"));
+    }
+    // LV-062: a valid checksum is not proof of content; a block violating
+    // a structural invariant (forge lab) is rejected whole.
+    if let Some(f) = structural {
+        return Layer::Rejected(format!("block structure: {f}"));
     }
     let mut inferred = Vec::new();
     for (i, c) in (1usize..).zip(cells) {
@@ -526,6 +535,7 @@ pub(crate) fn extract(
                 // trusted is accounted for under the integrity reason.
                 let why = match e {
                     RowError::Integrity(st) => format!("block integrity: {st:?}"),
+                    RowError::Structural(f) => format!("block structure: {f}"),
                     other => format!("row did not decode: {other:?}"),
                 };
                 writeln!(
@@ -549,7 +559,7 @@ pub(crate) fn extract(
                         line.push_str(&csv(&v));
                     }
                 }
-                let layer = match classify(&cells, r.block_status) {
+                let layer = match classify(&cells, r.block_status, r.structural) {
                     // LV-060: identity of the file was asserted, not read.
                     Layer::Verified if file_assumed => {
                         Layer::Inferred("file identity from --assume (header destroyed)".into())

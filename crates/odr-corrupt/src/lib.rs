@@ -90,6 +90,12 @@ pub struct Spec {
     pub seed: u64,
     /// Operations, applied in order.
     pub ops: Vec<Op>,
+    /// Restrict block-granular ops (`bitrot`, `torn`, `zero`, `swap`,
+    /// `forge`) to blocks `[first, last]`; `None` = whole file. Lets a test
+    /// aim damage at one segment so the sample is meaningful. Byte-granular
+    /// ops (`ransom`, `holes`, `truncate`, `wipe-header`) ignore it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blocks: Option<(u64, u64)>,
 }
 
 /// One damaged byte range in the output, `[offset, offset+len)`.
@@ -210,8 +216,17 @@ pub fn apply(input: &[u8], spec: &Spec) -> Result<(Vec<u8>, Manifest), SpecError
     let mut out = input.to_vec();
     let mut changes = Vec::new();
     let mut rng = Rng(spec.seed);
+    let range = match spec.blocks {
+        None => None,
+        Some((first, last)) => {
+            if last < first {
+                return Err(SpecError::Param("blocks: last < first"));
+            }
+            Some((usize_of(first)?, usize_of(last)?))
+        }
+    };
     for (i, op) in spec.ops.iter().enumerate() {
-        apply_op(&mut out, bs, i, op, &mut rng, &mut changes)?;
+        apply_op(&mut out, bs, i, op, &mut rng, &mut changes, range)?;
     }
     let manifest = Manifest {
         version: 1,
@@ -254,6 +269,20 @@ fn pick(rng: &mut Rng, n: usize) -> usize {
     usize::try_from(rng.below(u64::try_from(n).unwrap_or(u64::MAX))).unwrap_or(0)
 }
 
+/// Pick a block index inside the optional range (clamped to the image).
+fn pick_block(rng: &mut Rng, n: usize, range: Option<(usize, usize)>) -> Result<usize, SpecError> {
+    match range {
+        None => Ok(pick(rng, n)),
+        Some((first, last)) => {
+            let last = last.min(n.saturating_sub(1));
+            if first > last {
+                return Err(SpecError::Param("blocks range outside the image"));
+            }
+            Ok(first + pick(rng, last - first + 1))
+        }
+    }
+}
+
 #[allow(clippy::too_many_lines)]
 fn apply_op(
     out: &mut Vec<u8>,
@@ -262,6 +291,7 @@ fn apply_op(
     op: &Op,
     rng: &mut Rng,
     changes: &mut Vec<Change>,
+    range: Option<(usize, usize)>,
 ) -> Result<(), SpecError> {
     // Block body = bytes 20 .. B-4 (kcbh and tail check excluded).
     let body = 20..bs.saturating_sub(4);
@@ -269,7 +299,7 @@ fn apply_op(
         Op::Bitrot { count } => {
             let n = nblocks(out, bs)?;
             for _ in 0..count {
-                let b = pick(rng, n);
+                let b = pick_block(rng, n, range)?;
                 let pos = block_range(b, bs).start + body.start + pick(rng, body.len());
                 let bit = 1u8 << rng.below(8);
                 if let Some(x) = out.get_mut(pos) {
@@ -281,7 +311,7 @@ fn apply_op(
         Op::Torn { count } => {
             let n = nblocks(out, bs)?;
             for _ in 0..count {
-                let r = block_range(pick(rng, n), bs);
+                let r = block_range(pick_block(rng, n, range)?, bs);
                 let half = r.start + bs / 2;
                 if let Some(s) = out.get_mut(half..r.end) {
                     rng.fill(s);
@@ -292,7 +322,7 @@ fn apply_op(
         Op::Zero { count } => {
             let n = nblocks(out, bs)?;
             for _ in 0..count {
-                let r = block_range(pick(rng, n), bs);
+                let r = block_range(pick_block(rng, n, range)?, bs);
                 if let Some(s) = out.get_mut(r.clone()) {
                     s.fill(0);
                 }
@@ -350,8 +380,12 @@ fn apply_op(
                 return Err(SpecError::Param("swap needs at least two blocks"));
             }
             for _ in 0..count {
-                let a = pick(rng, n);
-                let mut b = pick(rng, n - 1);
+                let a = pick_block(rng, n, range)?;
+                let mut b = pick_block(
+                    rng,
+                    n.saturating_sub(1),
+                    range.map(|(f, l)| (f, l.saturating_sub(1))),
+                )?;
                 if b >= a {
                     b += 1;
                 }
@@ -382,7 +416,7 @@ fn apply_op(
         Op::Forge { count } => {
             let n = nblocks(out, bs)?;
             for _ in 0..count {
-                let r = block_range(pick(rng, n), bs);
+                let r = block_range(pick_block(rng, n, range)?, bs);
                 let Some(blk) = out.get_mut(r.clone()) else {
                     continue;
                 };

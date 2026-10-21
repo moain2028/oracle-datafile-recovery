@@ -80,9 +80,10 @@
 | ROWIDs | 15/15 جدول (بما فيها cluster) | golden_lab |
 | **precision(verified) تحت التلف** (seed 7، `odr_odr_assm01`) | zero_200 **1.000** / bitrot_400 **1.000** / holes_20_16 **1.000** / torn_200 **1.000** | golden_cli LV-059 |
 | recall تحت التلف | 0.958 / 0.937 / 1.000 / 0.986 | golden_cli LV-059 |
+| **forge/swap/ransom** (LV-062، 3 بذور على امتداد T_JOURNAL) | swap 105/105 مرفوضة · forge 39/144 كتلة + 110/54,000 صف خاطئ (0.2%) · ransom recall 0.895، 0 خطأ · 0 إيجابيات كاذبة على 18,084 كتلة | golden_cli `forged_swapped_and_encrypted_copies_are_rejected_not_believed` |
 | **محاسبة كاملة تحت التلف** (LV-061) | verified + rejected + صفوف الكتل المصفَّرة = **20,000** في الأنماط الأربعة (torn: 19,721 + 279 + 0) | golden_cli + `lab_torn_block_accounts_for_every_slot` |
 | wipe-header بلا `--assume` / معه | رفض (exit 1) / 0 verified · 20,000 inferred، القيم == النظيف | golden_cli LV-060 |
-| حقائق lab-verify | 68 صفاً: 23 ✅ على ملف حقيقي، 45 ⬜ (أغلبها يحتاج 19c/11g أو big-endian أو LOB) | lab-verify.md |
+| حقائق lab-verify | 69 صفاً: 24 ✅ على ملف حقيقي، 45 ⬜ (أغلبها يحتاج 19c/11g أو big-endian أو LOB) | lab-verify.md |
 
 > **تحذير:** أرقام الأداء من sandbox بلا ضمانات؛ أرقام الدقة فقط هي الملزِمة.
 
@@ -93,8 +94,8 @@
 | الحد | الأثر | أين موثَّق |
 |---|---|---|
 | ~~فجوة torn~~ **مغلقة (LV-061، 2026-10-21)**: كل خانة في كتلة غير سليمة تُحاسَب | — | lab-verify LV-061 |
-| **forge** (checksum صحيح + محتوى مُغيَّر) غير مكتشَف | قيمة مُغيَّرة قد تخرج verified — يحتاج تحقق بنيوي فوق checksum (طول الصف == مجموع الأعمدة، نطاقات الأنواع، NUMBER canonical) | §6 خطوة 2 |
-| **ransom**: الكتل المشفَّرة تُصنَّف Foreign؛ الرأس المشفَّر يحتاج `--assume` | يعمل يدوياً، غير مُختبَر آلياً | §6 خطوة 2 |
+| **forge داخل قيمة عمود** (checksum مُعاد + بايت واحد داخل VARCHAR2/NUMBER/DATE يبقى صالحاً) | 0.2% من الصفوف في اختبار forge تخرج verified بقيمة خاطئة؛ البنية الأحادية للكتلة لا تميّز `USD` عن `VSD`. ما يُكشف: دليل الصفوف، الأطوال، الأعلام، lock، cc، swap كاملاً. الحل الجذري عبر-الكتل (فهارس/undo) = M6 | LV-062 |
+| **ransom**: الكتل المشفَّرة `integrity: Foreign/TailMismatch`؛ الرأس المشفَّر يحتاج `--assume` | مُختبَر آلياً: 0 خطأ، recall 0.895 | LV-062 |
 | Hash clusters مرفوضة صراحةً | رسالة واضحة | dict_cmd.rs |
 | LOB / الضغط OLTP/Basic غير مدعومة (M5) | رفض صريح لا تخمين | STATUS M5 |
 | مؤكَّد على **26ai LE فقط**؛ 19c/11g وbig-endian ⬜ | LV-009 BE، LV-019/020 | §6 خطوة 3 |
@@ -109,15 +110,14 @@
 |---|---|---|---|
 | **0** | نظافة | قرار `fuzz/corpus/`؛ حذف الفقرات التاريخية المكررة من `2026-10-18_handover.md` إن أردت | CI أخضر |
 | **1** | ~~سدّ فجوة torn~~ **✅ منجزة (LV-061، 2026-10-21)** | `dict/rows.rs`: `trusted = status == Valid`؛ في كتلة غير موثوقة تُعدَّد كل خانات `nrow` ولا يُطبَّق أي تخطٍّ (`D`/continuation/`is_deleted`/unused) — تخرج `RowError::Integrity`؛ والكتلة التي لا تُفكّ تُسجَّل `integrity:` | ✅ `verified + rejected + zeroed == 20000` للأنماط الأربعة؛ precision 1.000 ثابتة؛ اختباران ذهبيان |
-| **2a** | **قياس forge (منجز 2026-10-21، بلا إصلاح بعد)** | سكربت مؤقت زوّر بايتاً واحداً (+1، checksum مُعاد) في **كل** كتلة من كتل T_JOURNAL الـ144 (3 بذور = 432 تزويراً): **325 قيمة خاطئة موسومة verified** (75%)، 48 rejected، 19 صف مفقود (التزوير في دليل الصفوف ⇒ الخانة تبدو «غير مستخدمة»)، 40 بلا أثر. حسب المنطقة: `col.val` 316 WRONG/1 REJ · `col.len` 9 WRONG/44 REJ · `rowdir` 19 MISS · `free`/`lock`/`cc`/`itl` بلا أثر. ثوابت رصّ فُحصت على كل الكتل السليمة (17,683 في SYSTEM + 394 ASSM + 6 MSSM): ✅ `lock ≤ itc` دائماً · ✅ لا تداخل بين الصفوف الحية · ✅ الخانة غير المستخدمة لا تشير أبداً داخل الـ heap · ❌ «أعلى صف ينتهي عند ذيل الكتلة» يفشل في 363 كتلة SYSTEM (صفوف محدَّثة تترك فجوات) · ❌ `fseo == أدنى صف` يفشل في 204 · ❌ `avsp ≥ fseo−fsbo` يفشل في 288 · ❌ سلسلة `frre` ليست دائماً hi-bit (565/722). **الخلاصة:** التزوير داخل قيمة عمود (73% من الحالات) لا يكشفه أي ثابت بنيوي للكتلة؛ ما يمكن سدّه بنيوياً: `rowdir` (19 MISS ⇒ rejected بدل مفقود) و`col.len` (جزء). القرار المطلوب من المالك: هل تُعلَن حدود forge صراحةً (قيمة مُغيَّرة مع checksum صحيح غير قابلة للكشف من داخل الكتلة وحدها) أم يُطلب تحقق عبر-الكتل (PK/فهارس) وهو عمل M6 | — |
-| **2** | **forge / ransom / swap** في المصفوفة | أضف `Op::Forge{count:50}`, `Op::Swap{count:20}`, `Op::Ransom{lead:8192*2, chunk:8192, every:10}` للاختبار؛ forge يحتاج **طبقة تحقق بنيوية**: `row_len == Σ col_len + header`، `cc` ضمن الحد، NUMBER canonical، DATE في النطاق؛ أي فشل ⇒ rejected «structural» | precision(verified)=1.0 على forge_50؛ swap: الكتل ذات objd غريب تُرفض (موجود) ولا صف خاطئ؛ ransom: مع `--assume` recall ≥ 0.85 و precision 1.0 |
+| **2** | ~~forge / ransom / swap~~ **✅ منجزة (LV-062، 2026-10-21)** | `DataBlock::structural_check()` بسبع ثوابت صمدت على 18,084 كتلة حقيقية (موضع rdba، lock≤itc، خانة غير مفكوكة⇒D، lck≥مراجع، سلسلة frre، لا تداخل، سقف avsp)؛ الكتلة المخالفة ⇒ غير موثوقة كلها؛ `odr-corrupt --blocks` لاستهداف امتداد الجدول | ✅ swap 105/105 مرفوضة، precision 1.0 · forge: 39/144 كتلة مرفوضة بنيوياً، **الباقي 110/54,000 صف خاطئ (0.2%) تزوير داخل قيمة عمود — حد معلَن ومسقوف باختبار ذهبي** · ransom+`--assume`: 0 خطأ، recall 0.895 · 0 إيجابيات كاذبة |
 | **3** | **مختبر 19c** (+11g XE إن توفر) | `container-registry.oracle.com/database/enterprise:19.3.0.0` يحتاج قبول رخصة في حساب Oracle للمالك ثم `docker login`؛ أعد `lab.sh corpus` + التصدير اليدوي (runbook §4) ⇒ golden ثانية `golden-19c-<date>` Release | golden_lab/golden_cli خضراء على 19c بلا تعديل أو بـ LV جديدة موثقة؛ ترقية ⬜→✅ لما ينطبق |
 | **4** | **LOB + الضغط** (M5) | في `10_corpus.sql`: جدول CLOB/BLOB (BasicFile ثم SecureFile) + جدول `COMPRESS BASIC`؛ `row/kdb.rs` يكشف flag 0x40 ويرفض صراحة الآن — ابدأ بـ LOB inline (< 4000) ثم LOB index/segment | recall ≥ 99% على LOB inline؛ الضغط: رفض صريح موثَّق حتى يُنفَّذ |
 | **5** | **إغلاق g** | في `lab_values_match_oracle_dump_byte_for_byte`: فكّ `\XXXX` (UNISTR escape) للنصوص العربية، وأضف T_CL_DEPT/T_CL_EMP عبر `read_cluster` | 141,613 / 141,613 قيمة |
 | **6** | **وضع بدون قاموس** (M4 — الميزة الفارقة) | `OBJ_<objd>` / `COL_<n>` من REQ-004، استدلال النوع من البايتات مع hold-out | دقة استدلال النوع ≥ 95% على مخططات لم تُستخدم في الضبط |
 | 7 | Windows release | `cargo build --release --target x86_64-pc-windows-msvc` في CI وإرفاق `odr.exe` بـ Release | يعمل على ملف ذهبي على Windows |
 
-**أول 30 دقيقة للوكيل القادم:** runbook §1–§2 → `gh pr list` (تأكد أن #10 الوحيد المفتوح) → تنزيل golden (runbook §4 البديل الأسرع، 62 MB؛ ملف `.sha256` يحمل مساراً مطلقاً — قارن الهاش يدوياً) → البوابات + `golden_lab` **9/9** + `golden_cli` 5/5 → ابدأ بالخطوة 2.
+**أول 30 دقيقة للوكيل القادم:** runbook §1–§2 → `gh pr list` (تأكد أن #10 الوحيد المفتوح) → تنزيل golden (runbook §4 البديل الأسرع، 62 MB؛ ملف `.sha256` يحمل مساراً مطلقاً — قارن الهاش يدوياً) → البوابات + `golden_lab` **10/10** + `golden_cli` **6/6** → ابدأ بالخطوة 3 (مختبر 21c XE بلا رخصة: `gvenzl/oracle-xe:21-slim`، الحاوية `odr-xe21`).
 
 ---
 

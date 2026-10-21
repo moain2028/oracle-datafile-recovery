@@ -581,6 +581,31 @@ pub(crate) fn extract(
                     }
                 }
                 let layer = match classify(&cells, r.block_status, r.structural) {
+                    // LV-065: torn block (tail mismatch) — the head of the
+                    // block is the version its header names, the tail is an
+                    // older/newer write. A row lying wholly below the first
+                    // broken sector, decoding exactly, with no fast-ADD
+                    // inference pending, is *inferred* with the rule named;
+                    // the frontier is evidence, not proof, so never verified.
+                    Layer::Rejected(_)
+                        if r.block_status == odr_core::block::BlockStatus::TailMismatch
+                            && r.structural.is_none()
+                            && rows
+                                .torn_frontier
+                                .get(&r.provenance.rdba)
+                                .is_some_and(|&f| r.span.1 > 0 && r.span.0.saturating_add(r.span.1) <= f)
+                            && matches!(
+                                classify(&cells, odr_core::block::BlockStatus::Valid, None),
+                                Layer::Verified
+                            ) =>
+                    {
+                        Layer::Inferred(format!(
+                            "torn block: row bytes {:#x}..{:#x} lie below the damage frontier {:#x} (LV-065)",
+                            r.span.0,
+                            r.span.0.saturating_add(r.span.1),
+                            rows.torn_frontier.get(&r.provenance.rdba).copied().unwrap_or(0)
+                        ))
+                    }
                     // LV-064: sibling of a row that did not decode exactly.
                     Layer::Verified | Layer::Inferred(_) if tainted.contains(&r.provenance.rdba) => {
                         Layer::Rejected(

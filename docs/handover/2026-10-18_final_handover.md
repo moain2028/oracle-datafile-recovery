@@ -115,7 +115,7 @@
 | **4** | **LOB + الضغط** (M5) | في `10_corpus.sql`: جدول CLOB/BLOB (BasicFile ثم SecureFile) + جدول `COMPRESS BASIC`؛ `row/kdb.rs` يكشف flag 0x40 ويرفض صراحة الآن — ابدأ بـ LOB inline (< 4000) ثم LOB index/segment | recall ≥ 99% على LOB inline؛ الضغط: رفض صريح موثَّق حتى يُنفَّذ |
 | **5** | **إغلاق g** | في `lab_values_match_oracle_dump_byte_for_byte`: فكّ `\XXXX` (UNISTR escape) للنصوص العربية، وأضف T_CL_DEPT/T_CL_EMP عبر `read_cluster` | 141,613 / 141,613 قيمة |
 | **6** | **وضع بدون قاموس** (M4 — الميزة الفارقة) | `OBJ_<objd>` / `COL_<n>` من REQ-004، استدلال النوع من البايتات مع hold-out | دقة استدلال النوع ≥ 95% على مخططات لم تُستخدم في الضبط |
-| 7 | Windows release | `cargo build --release --target x86_64-pc-windows-msvc` في CI وإرفاق `odr.exe` بـ Release | يعمل على ملف ذهبي على Windows |
+| 7 | ~~Windows release~~ **✅ `v0.1.0-alpha` (2026-10-21)** — `release.yml` يبني odr+odr-corrupt لـ Windows/Linux على أي وسم `v*` | Release يحمل zip/tar.gz + sha256؛ لم يُجرَّب بعد على Windows حقيقي (الخبير) |
 
 **أول 30 دقيقة للوكيل القادم:** runbook §1–§2 → `gh pr list` (تأكد أن #10 الوحيد المفتوح) → تنزيل golden (runbook §4 البديل الأسرع، 62 MB؛ ملف `.sha256` يحمل مساراً مطلقاً — قارن الهاش يدوياً) → البوابات + `golden_lab` **11/11** (مع `ODR_GOLDEN2` من Release `golden-21c-20261021`) + `golden_cli` **7/7** → خطة اليوم في `docs/handover/2026-10-21_session_plan.md` (D ثم E)، وإلا الخطوة 4 (LOB).
 

@@ -281,8 +281,30 @@ fn damaged_copies_never_yield_a_wrong_verified_cell() {
         let verified = csv_rows(&out_dir.join("verified.csv"));
         let wrong: Vec<&String> = verified.iter().filter(|l| !truth.contains(*l)).collect();
         assert!(wrong.is_empty(), "{name}: wrong verified rows {wrong:?}");
-        let inferred = csv_rows(&out_dir.join("inferred.csv"));
-        assert!(inferred.is_empty(), "{name}: unexpected inferred rows");
+        // LV-065: only a torn block may yield *inferred* rows (those wholly
+        // below the damage frontier); every one of them must equal the
+        // clean row, and the `_inference` column must name the rule.
+        let inferred_text = std::fs::read_to_string(out_dir.join("inferred.csv")).unwrap();
+        let inferred: Vec<&str> = csv_records(&inferred_text).into_iter().skip(1).collect();
+        if name == "torn_200" {
+            assert!(
+                !inferred.is_empty(),
+                "{name}: torn partial recovery produced nothing"
+            );
+        } else {
+            assert!(
+                inferred.is_empty(),
+                "{name}: unexpected inferred rows {inferred:?}"
+            );
+        }
+        for rec in &inferred {
+            let (row, why) = rec.rsplit_once(',').unwrap();
+            assert!(
+                why.contains("torn block") && why.contains("LV-065"),
+                "{name}: {why}"
+            );
+            assert!(truth.contains(row), "{name}: wrong inferred row {row}");
+        }
         // Recall floor (measured 2026-10-18; see lab-verify LV-059).
         #[allow(clippy::cast_precision_loss)]
         let recall = verified.len() as f64 / truth.len() as f64;
@@ -302,10 +324,11 @@ fn damaged_copies_never_yield_a_wrong_verified_cell() {
         // looks like `D`/continuation (seed 7: 0x15, 0x0B) is rejected.
         let zeroed_rows = truth_rows_in_zeroed_blocks(&truth, &bytes, 8192);
         assert_eq!(
-            verified.len() + rejected + zeroed_rows,
+            verified.len() + inferred.len() + rejected + zeroed_rows,
             truth.len(),
-            "{name}: verified {} + rejected {rejected} + unreadable(zeroed) {zeroed_rows}",
-            verified.len()
+            "{name}: verified {} + inferred {} + rejected {rejected} + unreadable(zeroed) {zeroed_rows}",
+            verified.len(),
+            inferred.len()
         );
         if name == "zero_200" {
             assert!(zeroed_rows > 0, "{name}: expected zeroed data blocks");

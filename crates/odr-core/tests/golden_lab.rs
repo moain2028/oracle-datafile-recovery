@@ -646,6 +646,73 @@ fn lab_torn_block_accounts_for_every_slot() {
             "block {b} slot {slot} missing"
         );
     }
+    // LV-065: the damage frontier of each torn block is known, sector
+    // aligned, never above the cut (BS/2), and every row whose bytes lie
+    // wholly below it is byte-identical to the clean row.
+    let mut src_clean = ImageSet::new(ByteOrder::Little);
+    src_clean.add(info(), read_file(&g.join("datafiles/odr_odr_assm01.dbf")));
+    let clean_rows = read_heap(&src_clean, &seg(&targets), 16, objd);
+    let clean_by_key: std::collections::HashMap<(u32, u16), &[Option<Vec<u8>>]> = clean_rows
+        .rows
+        .iter()
+        .filter_map(|r| r.as_ref().ok())
+        .map(|r| ((r.provenance.rdba, r.provenance.slot), r.columns.as_slice()))
+        .collect();
+    let mut below = 0usize;
+    for &b in &targets {
+        let rdba = Rdba::smallfile(16, b).unwrap().0;
+        let f = *got
+            .torn_frontier
+            .get(&rdba)
+            .unwrap_or_else(|| panic!("block {b}: no damage frontier"));
+        assert_eq!(f % 512, 0, "block {b}: frontier {f:#x} not sector aligned");
+        assert!(f <= BS / 2, "block {b}: frontier {f:#x} above the cut");
+        for r in got.rows.iter().filter_map(|r| r.as_ref().ok()) {
+            if r.provenance.rdba == rdba && r.span.0 + r.span.1 <= f {
+                assert_eq!(
+                    Some(r.columns.as_slice()),
+                    clean_by_key.get(&(rdba, r.provenance.slot)).copied(),
+                    "block {b} slot {}: row below frontier differs from clean",
+                    r.provenance.slot
+                );
+                below += 1;
+            }
+        }
+    }
+    assert!(below > 0, "no row below the frontier");
+
+    // A cut inside the row directory leaves no frontier: every offset in
+    // the directory is suspect, so nothing may be placed below anything.
+    let mut early = read_file(&g.join("datafiles/odr_odr_assm01.dbf"));
+    let b = 3227usize;
+    let db = DataBlock::parse(block(&early, 3227), ByteOrder::Little).unwrap();
+    let dir_mid = db.kdbh_off + 14 + 4 * usize::from(db.kdbh.ntab) + usize::from(db.kdbh.nrow);
+    for byte in &mut early[b * BS + dir_mid..(b + 1) * BS] {
+        x = x.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+        *byte = (x >> 56) as u8;
+    }
+    assert_eq!(
+        classify(block(&early, 3227), BS, ByteOrder::Little),
+        BlockStatus::TailMismatch
+    );
+    let mut src = ImageSet::new(ByteOrder::Little);
+    src.add(info(), early);
+    let got = read_heap(&src, &seg(&[3227]), 16, objd);
+    let rdba = Rdba::smallfile(16, 3227).unwrap().0;
+    // Either no frontier, or every row below it is still the clean row of
+    // the same slot — a garbage directory entry must never place a value.
+    if let Some(&f) = got.torn_frontier.get(&rdba) {
+        for r in got.rows.iter().filter_map(|r| r.as_ref().ok()) {
+            if r.span.0 + r.span.1 <= f {
+                assert_eq!(
+                    Some(r.columns.as_slice()),
+                    clean_by_key.get(&(rdba, r.provenance.slot)).copied(),
+                    "dir cut: slot {} below frontier {f:#x} differs from clean",
+                    r.provenance.slot
+                );
+            }
+        }
+    }
 }
 
 /// Step g (plan 2026-10-18 §5): **every stored value of every heap table**

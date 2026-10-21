@@ -17,8 +17,8 @@ use crate::bytes::ByteOrder;
 use crate::error::DecodeError;
 use crate::row::assemble::MAX_PIECES;
 use crate::row::{
-    AssembleError, ClusterPart, DataBlock, PieceSource, Provenance, RowPiece, StructuralFault,
-    assemble, cluster_columns,
+    AssembleError, ClusterPart, DataBlock, PieceSource, Provenance, RowPiece, Slot,
+    StructuralFault, assemble, cluster_columns,
 };
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
@@ -64,6 +64,10 @@ pub struct RawRow {
     /// every healthy block satisfies — a forged or mis-written block. Such
     /// a row is never *verified* either.
     pub structural: Option<StructuralFault>,
+    /// Byte range of the head piece inside its block: `(offset, len)`.
+    /// Lets a caller reason about *where* in a damaged block the row sits
+    /// (LV-065 torn blocks: rows wholly below the damage frontier).
+    pub span: (usize, usize),
 }
 
 /// Why a row could not be produced.
@@ -96,7 +100,22 @@ pub struct SegmentRows {
     pub skipped: Vec<(BlockAddr, Skip)>,
     /// Data blocks successfully read.
     pub data_blocks: usize,
+    /// For every `TailMismatch` block (by `rdba`): the lowest block offset
+    /// of a slot that is structurally broken — does not decode, is flagged
+    /// deleted / continuation / incomplete, is chained, or locks outside
+    /// the ITL. Below this offset the block still looks like the version
+    /// its header describes; at or above it the bytes are from another
+    /// write (LV-065). Absent when no slot of the block is broken: then
+    /// there is no evidence of *where* the damage lies and nothing from
+    /// that block may be upgraded.
+    pub torn_frontier: HashMap<u32, usize>,
 }
+
+/// Smallest I/O unit a torn write can leave half-written (LV-065). Disks
+/// and Oracle datafiles are addressed in 512-byte sectors; 4 KiB-sector
+/// devices are a multiple of it, so rounding down to 512 is never too
+/// optimistic.
+const TORN_SECTOR: usize = 512;
 
 /// The worse of two block statuses (`Valid` is best).
 fn worst(a: BlockStatus, b: BlockStatus) -> BlockStatus {
@@ -313,7 +332,73 @@ fn read_impl<S: BlockSource + ?Sized>(
         } else {
             (0..db.kdbh.nrow).map(|s| (s, db.row(s))).collect()
         };
+        // LV-065: in a torn block record where the damage begins. Only the
+        // tail-mismatch case: a checksum failure says nothing about *where*
+        // the altered bytes are. A torn write replaces whole I/O sectors,
+        // so the frontier is rounded **down** to a sector boundary: a row
+        // whose header sits below the first broken slot but whose values
+        // cross into the broken sector must not be believed. The row
+        // directory itself must lie below the frontier, or every offset in
+        // it is suspect and no row is placed.
+        if status == BlockStatus::TailMismatch {
+            let itc = db.ktb.itl_count;
+            let broken = slots
+                .iter()
+                .filter_map(|(s, r)| match db.slot(*s) {
+                    Ok(Slot::Row(o)) => match r {
+                        Ok(Some(p))
+                            if p.is_complete()
+                                && !p.is_deleted()
+                                && p.next.is_none()
+                                && p.head.is_none()
+                                && u16::from(p.lock) <= itc =>
+                        {
+                            None
+                        }
+                        _ => Some(o),
+                    },
+                    _ => None,
+                })
+                .min();
+            let dir_end = db
+                .kdbh_off
+                .saturating_add(crate::row::kdb::KDBH_LEN)
+                .saturating_add(4 * usize::from(db.kdbh.ntab))
+                .saturating_add(2 * usize::from(db.kdbh.nrow));
+            if let Some(o) = broken {
+                let frontier = o & !(TORN_SECTOR - 1);
+                // The cut may also lie *inside* the row directory, leaving
+                // garbage offsets that happen to point below the frontier.
+                // Such an offset lands mid-row or on another slot's row:
+                // the placed rows then overlap. Only a frontier whose rows
+                // are pairwise disjoint is evidence.
+                let mut placed: Vec<(usize, usize)> = slots
+                    .iter()
+                    .filter_map(|(s, r)| match (db.slot(*s), r) {
+                        (Ok(Slot::Row(o)), Ok(Some(p))) if o < frontier => Some((o, p.len.max(1))),
+                        _ => None,
+                    })
+                    .collect();
+                placed.sort_unstable();
+                let disjoint = placed
+                    .windows(2)
+                    .all(|w| matches!(w, [(o1, l1), (o2, _)] if o1.saturating_add(*l1) <= *o2));
+                if dir_end <= frontier && disjoint {
+                    out.torn_frontier.insert(rdba, frontier);
+                }
+            }
+        }
         for (slot, r) in slots {
+            let span = match db.slot(slot) {
+                Ok(Slot::Row(o)) => (
+                    o,
+                    r.as_ref()
+                        .ok()
+                        .and_then(|p| p.as_ref())
+                        .map_or(0, |p| p.len),
+                ),
+                _ => (0, 0),
+            };
             let prov = Provenance {
                 file,
                 rdba,
@@ -394,6 +479,7 @@ fn read_impl<S: BlockSource + ?Sized>(
                             rowid_row: slot,
                             block_status: worst(status, chain_status(&chain, order)),
                             structural,
+                            span,
                             columns: a.columns,
                             pieces: if a.pieces.len() > 1 {
                                 a.pieces
@@ -437,6 +523,7 @@ fn read_impl<S: BlockSource + ?Sized>(
                                 rowid_row,
                                 block_status: status,
                                 structural,
+                                span,
                                 columns: cols.into_iter().map(|c| c.map(<[u8]>::to_vec)).collect(),
                                 pieces: Vec::new(),
                             })),

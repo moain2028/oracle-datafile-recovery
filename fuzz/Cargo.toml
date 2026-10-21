@@ -77,3 +77,9 @@ name = "bootstrap_columns"
 path = "fuzz_targets/bootstrap_columns.rs"
 test = false
 doc = false
+
+[[bin]]
+name = "read_heap"
+path = "fuzz_targets/read_heap.rs"
+test = false
+doc = false

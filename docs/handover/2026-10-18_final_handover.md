@@ -80,8 +80,9 @@
 | ROWIDs | 15/15 جدول (بما فيها cluster) | golden_lab |
 | **precision(verified) تحت التلف** (seed 7، `odr_odr_assm01`) | zero_200 **1.000** / bitrot_400 **1.000** / holes_20_16 **1.000** / torn_200 **1.000** | golden_cli LV-059 |
 | recall تحت التلف | 0.958 / 0.937 / 1.000 / 0.986 | golden_cli LV-059 |
+| **محاسبة كاملة تحت التلف** (LV-061) | verified + rejected + صفوف الكتل المصفَّرة = **20,000** في الأنماط الأربعة (torn: 19,721 + 279 + 0) | golden_cli + `lab_torn_block_accounts_for_every_slot` |
 | wipe-header بلا `--assume` / معه | رفض (exit 1) / 0 verified · 20,000 inferred، القيم == النظيف | golden_cli LV-060 |
-| حقائق lab-verify | 67 صفاً: 22 ✅ على ملف حقيقي، 45 ⬜ (أغلبها يحتاج 19c/11g أو big-endian أو LOB) | lab-verify.md |
+| حقائق lab-verify | 68 صفاً: 23 ✅ على ملف حقيقي، 45 ⬜ (أغلبها يحتاج 19c/11g أو big-endian أو LOB) | lab-verify.md |
 
 > **تحذير:** أرقام الأداء من sandbox بلا ضمانات؛ أرقام الدقة فقط هي الملزِمة.
 
@@ -91,7 +92,7 @@
 
 | الحد | الأثر | أين موثَّق |
 |---|---|---|
-| **فجوة torn**: في كتلة `TailMismatch` قد يبدو بايت العلم كـ `D`/قطعة تابعة فيُتخطى الصف بلا سطر rejected | recall لا precision | handover §4/19 |
+| ~~فجوة torn~~ **مغلقة (LV-061، 2026-10-21)**: كل خانة في كتلة غير سليمة تُحاسَب | — | lab-verify LV-061 |
 | **forge** (checksum صحيح + محتوى مُغيَّر) غير مكتشَف | قيمة مُغيَّرة قد تخرج verified — يحتاج تحقق بنيوي فوق checksum (طول الصف == مجموع الأعمدة، نطاقات الأنواع، NUMBER canonical) | §6 خطوة 2 |
 | **ransom**: الكتل المشفَّرة تُصنَّف Foreign؛ الرأس المشفَّر يحتاج `--assume` | يعمل يدوياً، غير مُختبَر آلياً | §6 خطوة 2 |
 | Hash clusters مرفوضة صراحةً | رسالة واضحة | dict_cmd.rs |
@@ -107,7 +108,7 @@
 | # | المهمة | التنفيذ المقترح | معيار القبول (قابل للقياس) |
 |---|---|---|---|
 | **0** | نظافة | قرار `fuzz/corpus/`؛ حذف الفقرات التاريخية المكررة من `2026-10-18_handover.md` إن أردت | CI أخضر |
-| **1** | **سدّ فجوة torn** | في `dict/rows.rs`: إذا `status != Valid` لا تُطبَّق أي تخطيات أعلام (`D`، continuation، `is_deleted`) — كل slot يخرج `Err`/rejected بسبب `block integrity` | في `damaged_copies_never_yield_a_wrong_verified_cell`: `verified + rejected == 20000` لكل الأنماط الأربعة (أزل تعليق KNOWN GAP) |
+| **1** | ~~سدّ فجوة torn~~ **✅ منجزة (LV-061، 2026-10-21)** | `dict/rows.rs`: `trusted = status == Valid`؛ في كتلة غير موثوقة تُعدَّد كل خانات `nrow` ولا يُطبَّق أي تخطٍّ (`D`/continuation/`is_deleted`/unused) — تخرج `RowError::Integrity`؛ والكتلة التي لا تُفكّ تُسجَّل `integrity:` | ✅ `verified + rejected + zeroed == 20000` للأنماط الأربعة؛ precision 1.000 ثابتة؛ اختباران ذهبيان |
 | **2** | **forge / ransom / swap** في المصفوفة | أضف `Op::Forge{count:50}`, `Op::Swap{count:20}`, `Op::Ransom{lead:8192*2, chunk:8192, every:10}` للاختبار؛ forge يحتاج **طبقة تحقق بنيوية**: `row_len == Σ col_len + header`، `cc` ضمن الحد، NUMBER canonical، DATE في النطاق؛ أي فشل ⇒ rejected «structural» | precision(verified)=1.0 على forge_50؛ swap: الكتل ذات objd غريب تُرفض (موجود) ولا صف خاطئ؛ ransom: مع `--assume` recall ≥ 0.85 و precision 1.0 |
 | **3** | **مختبر 19c** (+11g XE إن توفر) | `container-registry.oracle.com/database/enterprise:19.3.0.0` يحتاج قبول رخصة في حساب Oracle للمالك ثم `docker login`؛ أعد `lab.sh corpus` + التصدير اليدوي (runbook §4) ⇒ golden ثانية `golden-19c-<date>` Release | golden_lab/golden_cli خضراء على 19c بلا تعديل أو بـ LV جديدة موثقة؛ ترقية ⬜→✅ لما ينطبق |
 | **4** | **LOB + الضغط** (M5) | في `10_corpus.sql`: جدول CLOB/BLOB (BasicFile ثم SecureFile) + جدول `COMPRESS BASIC`؛ `row/kdb.rs` يكشف flag 0x40 ويرفض صراحة الآن — ابدأ بـ LOB inline (< 4000) ثم LOB index/segment | recall ≥ 99% على LOB inline؛ الضغط: رفض صريح موثَّق حتى يُنفَّذ |
@@ -115,7 +116,7 @@
 | **6** | **وضع بدون قاموس** (M4 — الميزة الفارقة) | `OBJ_<objd>` / `COL_<n>` من REQ-004، استدلال النوع من البايتات مع hold-out | دقة استدلال النوع ≥ 95% على مخططات لم تُستخدم في الضبط |
 | 7 | Windows release | `cargo build --release --target x86_64-pc-windows-msvc` في CI وإرفاق `odr.exe` بـ Release | يعمل على ملف ذهبي على Windows |
 
-**أول 30 دقيقة للوكيل القادم:** runbook §1–§2 → `gh pr list` (تأكد أن #21 مدموج و#10 الوحيد المفتوح) → تنزيل golden (runbook §4 البديل الأسرع، 62 MB) → البوابات + `golden_lab` 8/8 + `golden_cli` 5/5 → ابدأ بالخطوة 1.
+**أول 30 دقيقة للوكيل القادم:** runbook §1–§2 → `gh pr list` (تأكد أن #10 الوحيد المفتوح) → تنزيل golden (runbook §4 البديل الأسرع، 62 MB؛ ملف `.sha256` يحمل مساراً مطلقاً — قارن الهاش يدوياً) → البوابات + `golden_lab` **9/9** + `golden_cli` 5/5 → ابدأ بالخطوة 2.
 
 ---
 

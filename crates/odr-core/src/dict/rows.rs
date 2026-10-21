@@ -68,6 +68,12 @@ pub enum RowError {
     Assemble(AssembleError),
     /// A cluster member points at a key that does not decode.
     ClusterKey(DecodeError),
+    /// The slot sits in a block that failed its integrity check and the
+    /// piece could not be decoded or was flagged deleted / continuation —
+    /// flags that cannot be trusted there (LV-061). The slot is reported,
+    /// never dropped, so every directory slot of a damaged block is
+    /// accounted for.
+    Integrity(BlockStatus),
 }
 
 /// Output of a segment read.
@@ -208,18 +214,47 @@ fn read_impl<S: BlockSource + ?Sized>(
             out.skipped.push((addr, Skip::Integrity(status)));
             continue;
         }
+        // LV-061: in a block that failed integrity the type byte, the row
+        // flags and the row directory are themselves suspect. Such a block
+        // is either enumerated slot by slot (every slot reported) or, when
+        // it does not even parse, skipped *as an integrity failure* — never
+        // as "not a data block (type 0x96)" from a garbage byte (ransom
+        // lab) and never with rows silently dropped (torn lab: flag bytes
+        // 0x15 `D L N` and 0x0B `F P N` hid two rows).
+        let trusted = status == BlockStatus::Valid;
         let Ok(h) = BlockHeader::parse(&bytes, order) else {
-            out.skipped.push((addr, Skip::Unavailable));
+            out.skipped.push((
+                addr,
+                if trusted {
+                    Skip::Unavailable
+                } else {
+                    Skip::Integrity(status)
+                },
+            ));
             continue;
         };
         if h.type_byte != 0x06 {
-            out.skipped.push((addr, Skip::NotDataBlock(h.type_byte)));
+            out.skipped.push((
+                addr,
+                if trusted {
+                    Skip::NotDataBlock(h.type_byte)
+                } else {
+                    Skip::Integrity(status)
+                },
+            ));
             continue;
         }
         let db = match DataBlock::parse(&bytes, order) {
             Ok(db) => db,
             Err(e) => {
-                out.skipped.push((addr, Skip::Malformed(e)));
+                out.skipped.push((
+                    addr,
+                    if trusted {
+                        Skip::Malformed(e)
+                    } else {
+                        Skip::Integrity(status)
+                    },
+                ));
                 continue;
             }
         };
@@ -229,15 +264,33 @@ fn read_impl<S: BlockSource + ?Sized>(
         }
         out.data_blocks = out.data_blocks.saturating_add(1);
         let rdba = h.rdba.0;
-        for (slot, r) in db.rows() {
+        // A trusted block iterates its used slots; an untrusted one iterates
+        // every directory slot, so that nothing can hide behind an "unused"
+        // offset or a flag byte (LV-061).
+        let slots: Vec<(u16, Result<Option<RowPiece<'_>>, DecodeError>)> = if trusted {
+            db.rows().map(|(s, r)| (s, r.map(Some))).collect()
+        } else {
+            (0..db.kdbh.nrow).map(|s| (s, db.row(s))).collect()
+        };
+        for (slot, r) in slots {
             let prov = Provenance {
                 file,
                 rdba,
                 slot,
                 scn: h.scn.0,
             };
+            // Reason used for every flag-based skip inside an untrusted block.
+            let integrity = || Err((prov, RowError::Integrity(status)));
             let piece = match r {
-                Ok(p) => p,
+                Ok(Some(p)) => p,
+                Ok(None) => {
+                    // Unused slot: nothing in a trusted block; in an
+                    // untrusted block the directory itself is suspect.
+                    if !trusted {
+                        out.rows.push(integrity());
+                    }
+                    continue;
+                }
                 Err(e) => {
                     // LV-058: a row whose flag byte says *deleted* (`D`) may
                     // have had its bytes partly reused by a newer row (26ai
@@ -246,25 +299,35 @@ fn read_impl<S: BlockSource + ?Sized>(
                     // not an error of the block, so it is skipped silently.
                     // Only in a block that passed integrity: in a torn
                     // block the flag byte itself may be garbage, and the
-                    // row must then be *rejected*, never dropped (LV-059).
-                    if status == BlockStatus::Valid
-                        && db
-                            .row_flag(slot)
-                            .is_some_and(|f| f & crate::row::flag::D != 0)
+                    // row must then be *rejected*, never dropped (LV-061).
+                    if !trusted {
+                        out.rows.push(integrity());
+                    } else if db
+                        .row_flag(slot)
+                        .is_some_and(|f| f & crate::row::flag::D != 0)
                     {
-                        continue;
+                        // skipped silently (LV-058)
+                    } else {
+                        out.rows.push(Err((prov, RowError::Decode(e))));
                     }
-                    out.rows.push(Err((prov, RowError::Decode(e))));
                     continue;
                 }
             };
             if piece.is_deleted() {
+                if !trusted {
+                    out.rows.push(integrity());
+                }
                 continue;
             }
             match cluster {
                 None => {
                     if !piece.is_head() {
-                        continue; // continuation piece: reached through its head
+                        // continuation piece: reached through its head —
+                        // unless the flag that says so is untrusted.
+                        if !trusted {
+                            out.rows.push(integrity());
+                        }
+                        continue;
                     }
                     let chain = if piece.next.is_some() {
                         prefetch_chain(src, from_file, &piece)
@@ -288,15 +351,28 @@ fn read_impl<S: BlockSource + ?Sized>(
                                 Vec::new()
                             },
                         })),
-                        Err(AssembleError::Deleted) => {}
-                        Err(e) => out.rows.push(Err((prov, RowError::Assemble(e)))),
+                        Err(AssembleError::Deleted) => {
+                            if !trusted {
+                                out.rows.push(integrity());
+                            }
+                        }
+                        Err(e) if trusted => {
+                            out.rows.push(Err((prov, RowError::Assemble(e))));
+                        }
+                        Err(_) => out.rows.push(integrity()),
                     }
                 }
                 Some((tab, clucols)) => {
-                    if db.table_of(slot) != Some(tab) || !piece.is_cluster_member() {
+                    // Table membership comes from `kdbt`, not from the row's
+                    // flag byte: a slot of another table is never this
+                    // table's row, trusted or not.
+                    if db.table_of(slot) != Some(tab) {
                         continue;
                     }
                     let Some(ClusterPart::Member { key_index }) = piece.cluster else {
+                        if !trusted {
+                            out.rows.push(integrity());
+                        }
                         continue;
                     };
                     // LV-046: ROWID row number is relative to the table's kdbt entry.
@@ -313,9 +389,15 @@ fn read_impl<S: BlockSource + ?Sized>(
                                 columns: cols.into_iter().map(|c| c.map(<[u8]>::to_vec)).collect(),
                                 pieces: Vec::new(),
                             })),
-                            Err(e) => out.rows.push(Err((prov, RowError::ClusterKey(e)))),
+                            Err(e) if trusted => {
+                                out.rows.push(Err((prov, RowError::ClusterKey(e))));
+                            }
+                            Err(_) => out.rows.push(integrity()),
                         },
-                        Err(e) => out.rows.push(Err((prov, RowError::ClusterKey(e)))),
+                        Err(e) if trusted => {
+                            out.rows.push(Err((prov, RowError::ClusterKey(e))));
+                        }
+                        Err(_) => out.rows.push(integrity()),
                     }
                 }
             }

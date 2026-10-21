@@ -478,6 +478,133 @@ fn lab_row_readers_match_oracle_rowids() {
     assert!(checked >= 14, "checked {checked}");
 }
 
+/// LV-061 — *in a block that failed integrity no flag-based skip applies.*
+///
+/// Takes the real `T_JOURNAL` blocks 3227 and 3311 of the ASSM file (the two
+/// that hid a row each under seed 7 torn damage: garbage flag bytes `0x15`
+/// = `D L N` and `0x0B` = `F P N`), tears their second half the same way
+/// `odr-corrupt` does, and checks the reader's accounting: every slot of
+/// the row directory (`nrow`) is reported — as a row tagged with the block
+/// status or as `RowError::Integrity` — and nothing is `Ok` with
+/// `block_status == Valid`. The clean file is the control: same slots, all
+/// `Ok`/`Valid`, zero errors.
+#[test]
+fn lab_torn_block_accounts_for_every_slot() {
+    use odr_core::dict::rows::{RowError, read_heap};
+    use odr_core::dict::segment::{Extent, SegmentBlocks};
+    use odr_core::dict::source::{FileInfo, ImageSet};
+    let Some(g) = golden() else { return };
+    let clean = read_file(&g.join("datafiles/odr_odr_assm01.dbf"));
+    let info = || FileInfo {
+        file: 16,
+        relative: Some(16),
+        block_size: BS,
+        scheme: RdbaScheme::Smallfile,
+        tablespace: None,
+    };
+    // T_JOURNAL's data object id, from the block itself (ktbbh.objd).
+    let objd = DataBlock::parse(block(&clean, 3227), ByteOrder::Little)
+        .unwrap()
+        .ktb
+        .objd;
+    let seg = |blocks: &[u32]| SegmentBlocks {
+        objd,
+        extents: blocks
+            .iter()
+            .map(|&b| Extent {
+                dba: Rdba::smallfile(16, b).unwrap(),
+                blocks: 1,
+            })
+            .collect(),
+        issues: Vec::new(),
+    };
+    let targets = [3227u32, 3311];
+    let nrow: usize = targets
+        .iter()
+        .map(|&b| {
+            usize::from(
+                DataBlock::parse(block(&clean, b), ByteOrder::Little)
+                    .unwrap()
+                    .kdbh
+                    .nrow,
+            )
+        })
+        .sum();
+    assert_eq!(nrow, 142 + 137, "26ai lab: slots of blocks 3227 + 3311");
+
+    // Control: clean blocks → every slot Ok and Valid.
+    let mut src = ImageSet::new(ByteOrder::Little);
+    src.add(info(), clean.clone());
+    let got = read_heap(&src, &seg(&targets), 16, objd);
+    assert_eq!(got.rows.len(), nrow);
+    assert!(got.rows.iter().all(|r| {
+        r.as_ref()
+            .is_ok_and(|r| r.block_status == BlockStatus::Valid)
+    }));
+
+    // Torn: second half overwritten with deterministic junk (same recipe as
+    // odr-corrupt's `Torn`, including the bytes that produced the gap).
+    let mut torn = clean;
+    let mut x = 7u64;
+    for &b in &targets {
+        for byte in &mut torn[b as usize * BS + BS / 2..(b as usize + 1) * BS] {
+            x = x.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            *byte = (x >> 56) as u8;
+        }
+        // Make sure the flag bytes of the two historical slots are the
+        // ones that fooled the reader before LV-061.
+        let db = DataBlock::parse(block(&torn, b), ByteOrder::Little).unwrap();
+        let slot = if b == 3227 { 85 } else { 119 };
+        let off = match db.slot(slot).unwrap() {
+            odr_core::row::Slot::Row(o) => o,
+            odr_core::row::Slot::Unused => panic!("slot {slot} unused"),
+        };
+        torn[b as usize * BS + off] = if b == 3227 { 0x15 } else { 0x0B };
+        assert_eq!(
+            classify(block(&torn, b), BS, ByteOrder::Little),
+            BlockStatus::TailMismatch
+        );
+    }
+    let mut src = ImageSet::new(ByteOrder::Little);
+    src.add(info(), torn);
+    let got = read_heap(&src, &seg(&targets), 16, objd);
+    assert_eq!(
+        got.rows.len(),
+        nrow,
+        "every directory slot of a torn block is accounted for"
+    );
+    let mut ok_tagged = 0usize;
+    let mut integrity = 0usize;
+    for r in &got.rows {
+        match r {
+            Ok(r) => {
+                assert_eq!(r.block_status, BlockStatus::TailMismatch);
+                ok_tagged += 1;
+            }
+            Err((_, RowError::Integrity(st))) => {
+                assert_eq!(*st, BlockStatus::TailMismatch);
+                integrity += 1;
+            }
+            Err((p, e)) => panic!("slot {} must be Integrity, got {e:?}", p.slot),
+        }
+    }
+    assert!(
+        ok_tagged > 0 && integrity > 0,
+        "ok {ok_tagged} integrity {integrity}"
+    );
+    // The two slots that used to vanish are now present as Integrity.
+    for (b, slot) in [(3227u32, 85u16), (3311, 119)] {
+        let rdba = Rdba::smallfile(16, b).unwrap().0;
+        assert!(
+            got.rows.iter().any(|r| matches!(
+                r,
+                Err((p, RowError::Integrity(_))) if p.rdba == rdba && p.slot == slot
+            )),
+            "block {b} slot {slot} missing"
+        );
+    }
+}
+
 /// Step g (plan 2026-10-18 §5): **every stored value of every heap table**
 /// must equal, byte for byte, what Oracle's own `DUMP(col, 1016)` printed
 /// into `rows.psv` (141,613 truth values). Columns are matched by

@@ -211,6 +211,23 @@ fn csv_rows(p: &std::path::Path) -> std::collections::HashSet<String> {
         .collect()
 }
 
+/// Number of clean rows whose block (CSV column `_block`) is entirely zero
+/// in `damaged` — rows that no reader can enumerate, hence the only rows a
+/// damaged extraction may fail to account for (LV-061).
+fn truth_rows_in_zeroed_blocks(
+    truth: &std::collections::HashSet<String>,
+    damaged: &[u8],
+    bs: usize,
+) -> usize {
+    truth
+        .iter()
+        .filter(|l| {
+            let b: usize = l.split(',').nth(1).unwrap().parse().unwrap();
+            damaged[b * bs..(b + 1) * bs].iter().all(|&x| x == 0)
+        })
+        .count()
+}
+
 /// LV-059 — *precision of the verified layer is 1.0 under damage.*
 ///
 /// Deterministic `odr-corrupt` copies of the ASSM file (bit rot, zeroed
@@ -276,15 +293,25 @@ fn damaged_copies_never_yield_a_wrong_verified_cell() {
             serde_json::from_str(&std::fs::read_to_string(out_dir.join("report.json")).unwrap())
                 .unwrap();
         let rejected = report["rows"]["rejected"].as_u64().unwrap() as usize;
-        // Rows in zeroed / truncated blocks cannot be read at all; the block
-        // is then listed in `skipped_blocks` with an `integrity:` key.
-        // KNOWN GAP (handover §5, next step): in a *torn* block a garbage
-        // flag byte can look like "deleted"/"continuation" and the row is
-        // skipped without a rejected line — recall, not precision.
-        assert!(verified.len() + rejected <= truth.len(), "{name}");
+        // LV-061 — exact accounting: every one of the 20,000 rows is either
+        // verified, rejected with a reason, or inside a block that was
+        // zeroed whole (no row directory left to enumerate; the block is
+        // listed in `skipped_blocks` under `integrity: Zeroed`). Nothing
+        // is dropped silently: in a torn block a garbage flag byte that
+        // looks like `D`/continuation (seed 7: 0x15, 0x0B) is rejected.
+        let zeroed_rows = truth_rows_in_zeroed_blocks(&truth, &bytes, 8192);
+        assert_eq!(
+            verified.len() + rejected + zeroed_rows,
+            truth.len(),
+            "{name}: verified {} + rejected {rejected} + unreadable(zeroed) {zeroed_rows}",
+            verified.len()
+        );
         if name == "zero_200" {
+            assert!(zeroed_rows > 0, "{name}: expected zeroed data blocks");
             let skipped = report["skipped_blocks"].as_object().unwrap();
             assert!(skipped.contains_key("integrity: Zeroed"), "{skipped:?}");
+        } else {
+            assert_eq!(zeroed_rows, 0, "{name}");
         }
         let rej = std::fs::read_to_string(out_dir.join("rejected.csv")).unwrap();
         assert_eq!(

@@ -18,7 +18,7 @@ use odr_core::block::Rdba;
 use odr_core::charset::Charset;
 use odr_core::dict::kcvfh::FileHeader;
 use odr_core::dict::resolver::Dictionary;
-use odr_core::dict::rows::{Skip, read_cluster, read_heap};
+use odr_core::dict::rows::{RowError, Skip, read_cluster, read_heap};
 use odr_core::dict::schema::{Cell, TableDef, materialize};
 use odr_core::dict::segment::walk_segment;
 use odr_core::dict::source::{BlockAddr, BlockSource, FileInfo, FileSet};
@@ -522,13 +522,19 @@ pub(crate) fn extract(
         match r {
             Err((prov, e)) => {
                 let (_, b) = Rdba(prov.rdba).split(scheme);
+                // LV-061: a slot of a damaged block whose flags could not be
+                // trusted is accounted for under the integrity reason.
+                let why = match e {
+                    RowError::Integrity(st) => format!("block integrity: {st:?}"),
+                    other => format!("row did not decode: {other:?}"),
+                };
                 writeln!(
                     w_rej,
                     "{},{b},{}{},{}",
                     prov.file,
                     prov.slot,
                     ",".repeat(visible.len()),
-                    csv(&format!("row did not decode: {e:?}"))
+                    csv(&why)
                 )?;
                 n_rej = n_rej.saturating_add(1);
             }

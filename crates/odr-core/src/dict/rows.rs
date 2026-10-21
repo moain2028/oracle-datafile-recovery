@@ -37,6 +37,9 @@ pub enum Skip {
     Malformed(DecodeError),
     /// Block is zeroed or truncated (LV-059).
     Integrity(BlockStatus),
+    /// Block lies at or above the segment's high-water mark: never
+    /// formatted for this object, may hold a previous owner's rows (LV-063).
+    AboveHighWater,
 }
 
 /// One row with its origin.
@@ -208,6 +211,13 @@ fn read_impl<S: BlockSource + ?Sized>(
             continue;
         };
         let addr = BlockAddr { file, block };
+        // LV-063: blocks above the HWM belong to nobody yet. Oracle never
+        // reads them; a reused extent can still carry a dropped object's
+        // rows there (21c lab: C_TS# extent 1 held 3 blocks of objd 24459).
+        if seg.above_hwm(scheme, rel, block) {
+            out.skipped.push((addr, Skip::AboveHighWater));
+            continue;
+        }
         let Some(bytes) = src.block(addr) else {
             out.skipped.push((addr, Skip::Unavailable));
             continue;

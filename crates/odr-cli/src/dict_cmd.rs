@@ -594,6 +594,7 @@ pub(crate) fn extract(
             Skip::ForeignObject(o) => format!("foreign object {o}"),
             Skip::Malformed(e) => format!("malformed: {e}"),
             Skip::Integrity(st) => format!("integrity: {st:?}"),
+            Skip::AboveHighWater => "above high-water mark".to_owned(),
             _ => "other".to_owned(),
         };
         let n = skipped.entry(k).or_default();

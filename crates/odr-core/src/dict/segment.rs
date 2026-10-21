@@ -245,6 +245,24 @@ pub enum WalkIssue {
     },
 }
 
+/// High-water mark of a segment (`ktech` in the segment header, LV-063):
+/// blocks at or beyond it were never formatted for this object and may
+/// still carry a previous owner's data (26ai/21c: a reused extent of
+/// `C_TS#` held three blocks of a dropped object).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct HighWater {
+    /// Index of the extent that holds the HWM (0-based, map order).
+    pub extent: u32,
+    /// Blocks of that extent below the HWM (`blk#`).
+    pub block_in_extent: u32,
+    /// Size of that extent (`ext size`).
+    pub extent_size: u32,
+    /// `rdba` of the HWM block itself.
+    pub dba: Rdba,
+    /// Formatted blocks below the HWM across the whole segment.
+    pub blocks_below: u32,
+}
+
 /// The enumerated blocks of one segment.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SegmentBlocks {
@@ -254,6 +272,10 @@ pub struct SegmentBlocks {
     pub extents: Vec<Extent>,
     /// Problems met while walking (the result is partial if non-empty).
     pub issues: Vec<WalkIssue>,
+    /// High-water mark when the header carries one (MSSM `0x10` and ASSM
+    /// `0x23` headers do; it is accepted only if self-consistent with the
+    /// extent map, otherwise `None` and every block is read).
+    pub hwm: Option<HighWater>,
 }
 
 impl SegmentBlocks {
@@ -277,6 +299,59 @@ impl SegmentBlocks {
     pub fn is_empty(&self) -> bool {
         self.extents.is_empty()
     }
+
+    /// Whether `(relative file, block)` lies at or above the high-water
+    /// mark — i.e. in an extent after the HWM extent, or in the HWM extent
+    /// at `block_in_extent` or beyond. `false` when no HWM is known.
+    pub fn above_hwm(&self, scheme: RdbaScheme, file: Option<u32>, block: u32) -> bool {
+        let Some(h) = self.hwm else { return false };
+        let Ok(hwm_ext) = usize::try_from(h.extent) else {
+            return false;
+        };
+        for (i, e) in self.extents.iter().enumerate() {
+            let (f, first) = e.dba.split(scheme);
+            if f != file || block < first || block.saturating_sub(first) >= e.blocks {
+                continue;
+            }
+            return i > hwm_ext
+                || (i == hwm_ext && block.saturating_sub(first) >= h.block_in_extent);
+        }
+        false
+    }
+}
+
+/// Read the `ktech` high-water mark of a segment header (LV-063). Offsets
+/// 48/52/56/60/76 are identical for MSSM (`0x10`) and ASSM (`0x23`) headers
+/// and were matched field by field against `ALTER SYSTEM DUMP` traces on
+/// 26ai (8 headers) and 21c (3 headers). Returns `None` when the values do
+/// not fit the extent map, so a damaged header never hides blocks.
+fn read_hwm(header: &[u8], order: ByteOrder, extents: &[Extent]) -> Option<HighWater> {
+    let h = HighWater {
+        extent: read_u32(header, 48, order).ok()?,
+        block_in_extent: read_u32(header, 52, order).ok()?,
+        extent_size: read_u32(header, 56, order).ok()?,
+        dba: Rdba(read_u32(header, 60, order).ok()?),
+        blocks_below: read_u32(header, 76, order).ok()?,
+    };
+    let ext = extents.get(usize::try_from(h.extent).ok()?)?;
+    // Self-consistency: the HWM extent's recorded size equals the map's,
+    // blk# fits in it, and the HWM dba is that extent's start + blk#.
+    if h.extent_size != ext.blocks || h.block_in_extent > ext.blocks {
+        return None;
+    }
+    if h.dba.0 != ext.dba.0.checked_add(h.block_in_extent)? {
+        return None;
+    }
+    // blocks_below equals the blocks of all earlier extents plus blk#.
+    let before: u64 = extents
+        .iter()
+        .take(usize::try_from(h.extent).ok()?)
+        .map(|e| u64::from(e.blocks))
+        .sum();
+    if u64::from(h.blocks_below) != before.checked_add(u64::from(h.block_in_extent))? {
+        return None;
+    }
+    Some(h)
 }
 
 /// Walk a segment's extent map starting from its header block. `fetch`
@@ -303,6 +378,7 @@ where
         objd,
         extents: first.extents.clone(),
         issues: Vec::new(),
+        hwm: None,
     };
     let mut seen: HashSet<u32> = HashSet::from([header_rdba.0]);
     let mut next = first.next;
@@ -362,6 +438,14 @@ where
             declared: t,
             found: out.extents.len(),
         });
+    }
+    // The HWM is checked against the *complete* extent list (it may sit in
+    // an extent that only a chained map block lists).
+    if matches!(
+        first.kind,
+        MapKind::FreelistHeader | MapKind::PagetableHeader
+    ) {
+        out.hwm = read_hwm(header, order, &out.extents);
     }
     Ok(out)
 }

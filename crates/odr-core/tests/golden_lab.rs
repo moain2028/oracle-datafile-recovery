@@ -559,6 +559,7 @@ fn lab_torn_block_accounts_for_every_slot() {
             })
             .collect(),
         issues: Vec::new(),
+        hwm: None,
     };
     let targets = [3227u32, 3311];
     let nrow: usize = targets
@@ -1336,4 +1337,175 @@ fn lab_end_to_end_dictionary_to_cells() {
     eprintln!("end-to-end: {tables} tables, {cells_checked} cells compared");
     assert_eq!(tables, 13);
     assert!(cells_checked > 100_000);
+}
+
+/// LV-063 — *a second Oracle version, read with the same code.*
+///
+/// Runs against `ODR_GOLDEN2` (a golden set from another release; first
+/// produced on **Oracle 21c XE**, `gvenzl/oracle-xe:21-slim`, run
+/// `20261021T093052Z`). Nothing is hard-coded: file numbers, rfile numbers
+/// and schemes come from each file's own `kcvfh`, the SYSTEM file is found
+/// by its bootstrap, and every heap/cluster row of every `ODR.*` table is
+/// compared with Oracle's ROWID set and `COUNT(*)`; `T_JOURNAL` values are
+/// compared with `rows.psv`. The dictionary must load with **0 issues** —
+/// on 21c the first run reported 3 blocks of a dropped object inside a
+/// reused `C_TS#` extent *above its high-water mark*; `walk_segment` now
+/// reads the HWM (`ktech` @48/52/56/60/76, matched against 11 header dumps
+/// on 26ai + 21c) and the reader skips such blocks.
+#[test]
+fn lab2_second_version_reads_like_oracle() {
+    use odr_core::dict::resolver::Dictionary;
+    use odr_core::dict::rows::{read_cluster, read_heap};
+    use odr_core::dict::schema::materialize;
+    use odr_core::dict::source::{BlockAddr, BlockSource, FileInfo, ImageSet};
+    use odr_core::value::Charsets;
+    use std::collections::{BTreeMap, BTreeSet, HashMap};
+    let Some(g) = std::env::var_os("ODR_GOLDEN2").map(PathBuf::from) else {
+        return;
+    };
+    let mut src = ImageSet::new(ByteOrder::Little);
+    let mut system_file = None;
+    let mut infos: Vec<FileInfo> = Vec::new();
+    for e in std::fs::read_dir(g.join("datafiles")).unwrap() {
+        let p = e.unwrap().path();
+        if p.extension().is_none_or(|x| x != "dbf") {
+            continue;
+        }
+        let img = read_file(&p);
+        let h = FileHeader::detect(block(&img, 1)).unwrap();
+        let info = FileInfo::from_header(&h);
+        if p.file_name().unwrap().to_string_lossy().contains("system") {
+            system_file = Some(info.file);
+        }
+        infos.push(info);
+        src.add(info, img);
+    }
+    let sysf = system_file.unwrap();
+    let dict = Dictionary::load(&src, sysf).unwrap();
+    assert!(dict.issues.is_empty(), "{:?}", dict.issues);
+    let counts: BTreeMap<String, usize> = std::fs::read_to_string(g.join("meta/rowcounts.txt"))
+        .unwrap()
+        .lines()
+        .filter_map(|l| l.split_once('|'))
+        .map(|(t, n)| (t.to_owned(), n.trim().parse().unwrap()))
+        .collect();
+    let mut truth: BTreeMap<String, BTreeSet<(u32, u32, u16)>> = BTreeMap::new();
+    for l in std::fs::read_to_string(g.join("meta/rowids.psv"))
+        .unwrap()
+        .lines()
+    {
+        let p: Vec<&str> = l.split('|').collect();
+        if p.len() == 6 {
+            let rel: u32 = p[3].parse().unwrap();
+            truth.entry(p[0].to_owned()).or_default().insert((
+                if rel == 0 { 1024 } else { rel },
+                p[4].parse().unwrap(),
+                p[5].parse().unwrap(),
+            ));
+        }
+    }
+    // T_JOURNAL canonical truth: (id) -> col -> text
+    let mut jt: HashMap<String, HashMap<String, Option<String>>> = HashMap::new();
+    for l in std::fs::read_to_string(g.join("rows.psv")).unwrap().lines() {
+        let p: Vec<&str> = l.splitn(8, '|').collect();
+        if p.len() == 8 && p[0] == "T_JOURNAL" {
+            jt.entry(p[1].to_owned())
+                .or_default()
+                .insert(p[2].to_owned(), (p[4] != "NULL").then(|| p[7].to_owned()));
+        }
+    }
+    let find_file = |ts: u32, rfile: u32| -> u32 {
+        infos
+            .iter()
+            .find(|i| {
+                i.tablespace == Some(ts)
+                    && (i.relative == Some(rfile) || (i.relative.is_none() && rfile == 1024))
+            })
+            .map_or_else(|| panic!("no file for ts {ts} rfile {rfile}"), |i| i.file)
+    };
+    let cs = Charsets {
+        database: Charset::Al32Utf8,
+        national: Charset::Al16Utf16,
+    };
+    let mut checked = 0;
+    let mut journal_cells = 0usize;
+    for t in dict.tables() {
+        if t.owner_name.as_deref() != Some("ODR") {
+            continue;
+        }
+        let (file, hb, cluster, objd) = if t.is_clustered() {
+            let clu = dict.cluster_of(&t).unwrap();
+            let tab = usize::try_from(t.tab.unwrap()).unwrap();
+            let clucols = usize::try_from(t.clucols.unwrap_or(clu.cols)).unwrap();
+            (
+                find_file(clu.ts, clu.file),
+                clu.block,
+                Some((tab, clucols)),
+                clu.dataobj,
+            )
+        } else {
+            (find_file(t.ts, t.file), t.block, None, t.dataobj)
+        };
+        let scheme = src.scheme(file).unwrap();
+        let hdr = src.block(BlockAddr { file, block: hb }).unwrap();
+        let seg = walk_segment(&hdr, ByteOrder::Little, Rdba(0), |r| {
+            src.resolve(r, file).and_then(|a| src.block(a))
+        })
+        .unwrap();
+        assert!(seg.issues.is_empty(), "{}: {:?}", t.name, seg.issues);
+        assert_eq!(Some(seg.objd), objd, "{}: objd", t.name);
+        let rows = match cluster {
+            None => read_heap(&src, &seg, file, seg.objd),
+            Some((tab, clucols)) => read_cluster(&src, &seg, file, seg.objd, tab, clucols),
+        };
+        let errs: Vec<_> = rows.rows.iter().filter_map(|r| r.as_ref().err()).collect();
+        assert!(errs.is_empty(), "{}: {errs:?}", t.name);
+        let got: BTreeSet<(u32, u32, u16)> = rows
+            .rows
+            .iter()
+            .filter_map(|r| r.as_ref().ok())
+            .map(|r| {
+                let (f, b) = Rdba(r.provenance.rdba).split(scheme);
+                (f.unwrap_or(1024), b, r.rowid_row)
+            })
+            .collect();
+        assert_eq!(got.len(), counts[&t.name], "{}: COUNT(*)", t.name);
+        assert_eq!(&got, &truth[&t.name], "{}: rowid set", t.name);
+        assert!(
+            rows.rows.iter().all(|r| r
+                .as_ref()
+                .is_ok_and(|r| r.block_status == BlockStatus::Valid && r.structural.is_none())),
+            "{}: every row Valid and structurally clean",
+            t.name
+        );
+        if t.name == "T_JOURNAL" {
+            let visible = t.visible_columns();
+            let id_pos = visible.iter().position(|c| c.name == "ID").unwrap();
+            for r in rows.rows.iter().map(|r| r.as_ref().unwrap()) {
+                let stored: Vec<Option<&[u8]>> = r.columns.iter().map(|c| c.as_deref()).collect();
+                let cells = materialize(&t, &stored, cs);
+                let id = cells[id_pos].canonical().unwrap();
+                let want = &jt[&id];
+                for (c, cell) in visible.iter().zip(&cells) {
+                    let w = want[&c.name].as_deref().map(|w| w.trim().to_owned());
+                    if w.as_deref().is_some_and(|w| w.contains('\\')) {
+                        continue; // UNISTR-escaped Arabic in the export (step g)
+                    }
+                    assert_eq!(
+                        cell.canonical().map(|s| s.trim_end().to_owned()),
+                        w,
+                        "T_JOURNAL.{} id {id}",
+                        c.name
+                    );
+                    journal_cells += 1;
+                }
+            }
+        }
+        checked += 1;
+    }
+    assert_eq!(checked, 15, "ODR tables");
+    assert!(
+        journal_cells >= 100_000,
+        "T_JOURNAL cells compared: {journal_cells}"
+    );
 }

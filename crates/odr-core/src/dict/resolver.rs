@@ -751,13 +751,15 @@ impl Dictionary {
                 super::rows::Skip::ForeignObject(o) => format!("foreign object {o}"),
                 super::rows::Skip::Malformed(e) => format!("malformed: {e}"),
                 super::rows::Skip::Integrity(st) => format!("integrity: {st:?}"),
+                super::rows::Skip::AboveHighWater => "above high-water mark".to_owned(),
             };
             let n = by_reason.entry(key).or_default();
             *n = n.saturating_add(1);
         }
         for (reason, blocks) in by_reason {
-            // Non-data blocks (bitmap/extent-map) are normal inside a segment.
-            if reason == "not a data block" {
+            // Non-data blocks (bitmap/extent-map) and unformatted blocks
+            // above the HWM are normal inside a segment.
+            if reason == "not a data block" || reason == "above high-water mark" {
                 continue;
             }
             self.issues.push(Issue::Skipped {

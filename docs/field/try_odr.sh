@@ -17,7 +17,17 @@ step() { printf '\n== %s\n' "$1"; }
 ok()   { PASS=$((PASS+1)); printf '  PASS  %s\n' "$1"; }
 bad()  { FAIL=$((FAIL+1)); printf '  FAIL  %s\n' "$1"; }
 check(){ if [ "$1" = 0 ]; then ok "$2"; else bad "$2"; fi; }
-get()  { [ -f "$2" ] && { echo "  (exists) $2"; return; }; echo "  downloading $1"; curl -sSL -o "$2" "$1"; }
+# The repository and its Releases are private: download with `gh` (logged in as an
+# invited reader) or with ODR_TOKEN=<read token>; otherwise place the files in DIR by hand.
+get()  { [ -f "$2" ] && { echo "  (exists) $2"; return; }; echo "  downloading $(basename "$2")"
+         if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
+           gh release download "$3" -R moain2026/oracle-datafile-recovery -p "$(basename "$2")" -O "$2" 2>/dev/null && return
+         fi
+         if [ -n "${ODR_TOKEN:-}" ]; then
+           url=$(curl -sS -H "Authorization: Bearer $ODR_TOKEN" "https://api.github.com/repos/moain2026/oracle-datafile-recovery/releases/tags/$3" | grep -o '"url": *"https://api.github.com/repos/[^"]*/assets/[0-9]*"[^}]*"name": *"'"$(basename "$2")"'"' | head -1 | grep -o 'https://api.github.com/repos/[^"]*/assets/[0-9]*')
+           [ -n "$url" ] && curl -sSL -H "Authorization: Bearer $ODR_TOKEN" -H "Accept: application/octet-stream" -o "$2" "$url" && return
+         fi
+         echo "  cannot download $(basename "$2"): private release — run 'gh auth login' as an invited reader, set ODR_TOKEN, or copy the file into $DIR"; exit 1; }
 sha()  { local exp act; exp=$(awk '{print tolower($1)}' "$2"); act=$(sha256sum "$1" | awk '{print $1}')
          if [ "$exp" = "$act" ]; then ok "sha256 $1 = $act"; else bad "sha256 $1 MISMATCH"; echo "stop: do not trust this download"; exit 1; fi; }
 # run_extract OUT args... → sets V I R CODE
@@ -34,11 +44,11 @@ echo "ODR trial in $DIR  (tool $TAG, datafiles $GOLDEN)"
 
 step "1. Download and verify (SHA-256)"
 if [ -z "${ODR_TOOLDIR:-}" ]; then
-  get "$REPO/releases/download/$TAG/$TAR" "$TAR"; get "$REPO/releases/download/$TAG/$TAR.sha256" "$TAR.sha256"; sha "$TAR" "$TAR.sha256"
+  get "$REPO/releases/download/$TAG/$TAR" "$TAR" "$TAG"; get "$REPO/releases/download/$TAG/$TAR.sha256" "$TAR.sha256" "$TAG"; sha "$TAR" "$TAR.sha256"
   [ -x "odr-$TAG-x86_64-unknown-linux-gnu/odr" ] || tar -xzf "$TAR"
   TOOLDIR="$PWD/odr-$TAG-x86_64-unknown-linux-gnu"
 else TOOLDIR="$ODR_TOOLDIR"; fi
-get "$REPO/releases/download/$GOLDEN/$TGZ" "$TGZ"; get "$REPO/releases/download/$GOLDEN/odr_golden_26ai_v2.sha256" odr_golden_26ai_v2.sha256
+get "$REPO/releases/download/$GOLDEN/$TGZ" "$TGZ" "$GOLDEN"; get "$REPO/releases/download/$GOLDEN/odr_golden_26ai_v2.sha256" odr_golden_26ai_v2.sha256 "$GOLDEN"
 sha "$TGZ" odr_golden_26ai_v2.sha256
 [ -f 20261024T085903Z/datafiles/odr_odr_assm01.dbf ] || { echo "  extracting $TGZ (≈ 480 MB)"; tar -xzf "$TGZ" || exit 1; }
 ODR="$TOOLDIR/odr"; CORRUPT="$TOOLDIR/odr-corrupt"
@@ -86,11 +96,17 @@ run_extract out/lobchunk "$S" dmg/lobchunk.dbf --table ODR.T_LOB_BASIC; expect 5
 n=$(wc -l < out/lobchunk/rejected.csv); reason=$(grep -o 'column 2: LOB out of line could not be assembled: Integrity { rdba: 67112799, status: ChecksumFail } (LV-070)' out/lobchunk/rejected.csv | wc -l)
 check "$([ "$n" = 2 ] && [ "$reason" = 1 ] && grep -q '^16,[0-9]*,[0-9]*,6,' out/lobchunk/rejected.csv; echo $?)" "only row 6 rejected, reason cites ChecksumFail on rdba 67112799 (LV-070)"
 
-step "6. Compressed table (v0.2.0-alpha: refused, not guessed; LV-071 builds decode it)"
+step "6. Compressed table (COMPRESS BASIC): v0.2.0-alpha refuses it, later builds decode it (LV-071)"
 msg=$("$ODR" extract "$S" "$A" --table ODR.T_COMPRESS --out out/compress 2>&1); code=$?
-check "$([ $code = 1 ]; echo $?)" "T_COMPRESS exit code $code (expected 1)"
-check "$(printf '%s' "$msg" | grep -q compressed && printf '%s' "$msg" | grep -q LV-069; echo $?)" "message names compression and LV-069"
-check "$([ ! -f out/compress/verified.csv ]; echo $?)" "no verified.csv written for a refused table"
+if [ "$code" = 1 ]; then
+  ok "T_COMPRESS exit code 1: refused, not guessed"
+  check "$(printf '%s' "$msg" | grep -q compressed && printf '%s' "$msg" | grep -q LV-069; echo $?)" "message names compression and LV-069"
+  check "$([ ! -f out/compress/verified.csv ]; echo $?)" "no verified.csv written for a refused table"
+else
+  rm -rf out/compress; run_extract out/compress "$S" "$A" --table ODR.T_COMPRESS; expect 2000 0 0 0 "T_COMPRESS decoded through the symbol table (LV-071)"
+  bad=$(awk -F, 'NR>1{ if ($5 != "repeated value " ($4%5) || $6 != ($4%7)) b++ } END{print b+0}' out/compress/verified.csv)
+  check "$([ "$bad" = 0 ]; echo $?)" "every decoded row equals the generating formula (V = 'repeated value ' + ID mod 5, N = ID mod 7): $bad wrong"
+fi
 
 step "7. Source datafile untouched"
 sha_after=$(sha256sum "$A" | awk '{print $1}'); check "$([ "$sha_before" = "$sha_after" ]; echo $?)" "odr_odr_assm01.dbf sha256 unchanged"

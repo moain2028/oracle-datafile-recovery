@@ -66,3 +66,9 @@
 - ملاحظات: الـ trace يُدخل أسطر timestamp `*** 2026-…` وسط التفريغ (أزِلها قبل التحليل)؛ الكتلة 5126 لم تُفرَّغ (الدليل عليها من rows.psv فقط).
 - **حدّ معلَن**: forge داخل حرفي ⇒ لا يُكشف (7/20,000 صف عبر 10 بذور). فحص refcount يكشف التزوير الواقع على بايت إحالة فقط.
 - **لم يُنجز بعد**: توسيع مرشحات `odr scavenge` (INTERVAL/TSTZ/BINARY_*/NCHAR) مع hold-out؛ تشغيل `try_odr.ps1` على ويندوز حقيقي؛ تعديل `release.yml` (المالك).
+
+## §7 — حماية الملكية (ADR-0007، PR #39)
+
+- المالك طلب صراحةً ألا يُسلَّم شيء يمكن سرقته. **نُفِّذ**: `gh repo edit --visibility private` (تحقق 404 للعامة على المستودع والـ Release)؛ ADR-0007؛ `README_TRIAL.md`؛ SECURITY §IP؛ سكربتا التجربة ينزّلان من Release خاص (`gh` أو `ODR_TOKEN`) — مقاس: sh 33/33 عبر `gh` على الإصدار الخاص، ps1 32/32 على البناء الحالي، كلاهما يمر على v0.2.0-alpha (يرفض الضغط) وعلى البناء بعد LV-071 (يفكّه).
+- **عواقب الخاص على الخطة المجانية**: لا branch protection (403)؛ `gh pr checks`/`gh run list` تعطي 403 للتوكن (integration) — استخدمت `gh api pulls/N --jq .mergeable_state` (`unstable` = CI جارٍ، `clean` = كل الفحوص خضراء) كبديل مُثبت.
+- **مطلوب من المالك**: (1) تعديل `release.yml`: انسخ `docs/field/README_TRIAL.md QUICKSTART_ar.md TRIAL_KIT_ar.md try_odr.ps1 try_odr.sh` و**لا** تنسخ `CHANGELOG.md`/`README.md`؛ (2) دعوة الخبير كـ collaborator بصلاحية Read فقط أو إرسال الـ zip + golden يدوياً؛ (3) وسم `v0.3.0-alpha` بعد (1) ليحمل LV-071.

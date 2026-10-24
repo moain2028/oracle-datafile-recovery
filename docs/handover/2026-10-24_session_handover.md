@@ -42,7 +42,7 @@
 
 ## §4 — ما بعد PR #35 (أُضيف آخر الجلسة)
 
-- **PR #36** `lead/quickstart`: `docs/field/QUICKSTART_ar.md` (صفحة واحدة، كل رقم مقاس على golden v2 بالبناء release بعد دمج #35)، تحديث TRIAL_KIT (صف 11g باسمه الحقيقي `XE_system.dbf`، صف v2، LOB مدعوم، scavenge)، رفع الإصدار إلى 0.2.0. **لم يُدمج بعد وقت كتابة هذا السطر** — انظر رابط PR.
+- **PR #36** `lead/quickstart`: `docs/field/QUICKSTART_ar.md` (صفحة واحدة، كل رقم مقاس على golden v2 بالبناء release بعد دمج #35)، تحديث TRIAL_KIT (صف 11g باسمه الحقيقي `XE_system.dbf`، صف v2، LOB مدعوم، scavenge)، رفع الإصدار إلى 0.2.0. **دُمج** (3aaff6a). ثم وُسم `v0.2.0-alpha` وبُني بنجاح: 4 أصول، zip ويندوز 916 KB، sha256 متحقق محلياً، يحوي odr.exe/odr-corrupt.exe/TRIAL_KIT_ar.md (لا QUICKSTART — انظر السطر التالي). ملاحظات الإصدار تُحيل إلى QUICKSTART على main.
 - **لم يُنفَّذ**: تعديل `release.yml` لنسخ QUICKSTART داخل الأرشيف — التوكن بلا صلاحية `workflows` (رُفض الدفع). المالك يضيف `docs/field/QUICKSTART_ar.md` في سطري النسخ (Windows + Linux).
 - **الوسم `v0.2.0-alpha`**: يُنشأ بعد دمج #36 ليبني release.yml أرشيفات Windows/Linux تحمل دعم LOB.
 

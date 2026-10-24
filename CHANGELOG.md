@@ -1,6 +1,8 @@
 # Changelog
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 ## [Unreleased]
+### Added
+- **Self-checking trial scripts** `docs/field/try_odr.ps1` (Windows, PowerShell 5.1/7) and `try_odr.sh` (Linux): download tool + golden v2, verify SHA-256, run dict/extract/LOB/damage/compressed-refusal, assert every expected number (32 checks incl. "0 verified rows in the damaged output that are absent from the clean output" and "source sha256 unchanged"), print PASS/FAIL, exit 0/1. Measured: ps1 32/32 (pwsh 7.4 on Linux against the release build; `$args` is a reserved variable — parameter renamed), sh 33/33 through the real `v0.2.0-alpha` download path; both idempotent on re-run; a tampered expectation turns red.
 
 ## [0.2.0-alpha] - 2026-10-24
 ### Added

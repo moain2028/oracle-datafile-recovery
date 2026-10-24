@@ -184,3 +184,8 @@ for t in kcvfh segment bootstrap_columns row_piece data_block; do
 done
 # عند crash: cargo +nightly fuzz run <t> artifacts/<t>/crash-*  → أصلح → أعد التشغيل → احذف artifacts/
 ```
+
+## 9. golden v2 (2026-10-24) — LOB + COMPRESS
+- Release `golden-26ai-20261024` (run `20261024T085903Z`, 62 MB): نفس corpus v1 + `T_LOB_BASIC`/`T_LOB_SECURE`/`T_COMPRESS`. `golden_lab` يقبله كـ `ODR_GOLDEN` (يكتشف v2 من وجود T_LOB_BASIC)؛ `golden_cli` يأخذه عبر **`ODR_GOLDEN_V2`** (اختبارا LOB والضغط) ويُبقي `ODR_GOLDEN` على v1 لأن بذور التلف وأرقام الكتل قياسات على بايتات v1.
+- إعادة البناء: §3 ثم `./scripts/lab.sh corpus` (الـ SQL الحالي يحوي LOB/COMPRESS)؛ التصدير كما في §4 — **لكن** انسخ الملفات الأربعة فقط (`collect.sh` يملأ القرص). الصورة تحتاج 23 GB مفكوكة: احذف الحاوية والصورة بعد الـ release.
+

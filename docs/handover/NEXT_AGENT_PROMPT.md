@@ -47,14 +47,14 @@ cd /home/user/webapp
 export ODR_GOLDEN=$PWD/lab/out/golden/<26ai-run> ODR_GOLDEN2=$PWD/lab/out/golden/<11g-run>
 cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace \
   && cargo doc --workspace --no-deps && python3 tools/gen_charsets.py --check && (cd fuzz && cargo check --bins)
-# expected: golden_cli 8/8 (≈ 90 s), golden_lab 12/12, ≈114 tests total
+# expected: golden_cli 10/10 with ODR_GOLDEN_V2=<20261024 dir> (≈ 90 s), golden_lab 12/12, ≈117 tests total
 ```
 If anything is red, fix the environment first (runbook §6 lists every problem met so far and its fix).
 Do not start feature work on a red baseline.
 
 ## Then work, in this order (acceptance criteria in `2026-10-24_session_handover.md` §3)
 1. ~~F — close step g~~ ✅ done 2026-10-24 (LV-067, PR #33).
-2. **LOB + compression (M5)**: add a LOB table to `lab/sql/10_corpus.sql`, rebuild a golden set (runbook §4/§7b), read inline LOBs; compressed blocks stay an explicit refusal until implemented.
+2. **LOB out-of-line + compression (M5 part 2)** — inline LOBs done (LV-068, PR #34), compressed tables refused (LV-069); golden v2 = `golden-26ai-20261024` (`ODR_GOLDEN_V2` for golden_cli). Old text:: add a LOB table to `lab/sql/10_corpus.sql`, rebuild a golden set (runbook §4/§7b), read inline LOBs; compressed blocks stay an explicit refusal until implemented.
 3. **Extend `odr scavenge`** type candidates (INTERVAL, TSTZ, BINARY_*, NCHAR) **with hold-out**: tune on 26ai only, then measure on 11g and 21c without touching the code again.
 4. Anything the owner reports from the Windows trial (`docs/field/TRIAL_KIT_ar.md`).
 

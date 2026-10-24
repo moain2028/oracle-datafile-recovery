@@ -8,4 +8,6 @@ libfuzzer_sys::fuzz_target!(|d: &[u8]| {
     let _ = decode_binary_float(d);
     let _ = decode_binary_double(d);
     let _ = OraRowid::decode(d).map(|r| r.to_string());
+    // LV-068: LOB locator (inline / out-of-line / malformed), never panics.
+    let _ = LobLocator::parse(d);
 });

@@ -85,13 +85,29 @@ BEGIN
     FOR c IN (SELECT column_name, data_type FROM dba_tab_cols
               WHERE owner = 'ODR' AND table_name = t.table_name AND hidden_column = 'NO'
               ORDER BY column_id) LOOP
+      -- DUMP() refuses LOB types (ORA-22849): for CLOB/BLOB the head is synthesised
+      -- (Typ=112/113, Len = DBMS_LOB.GETLENGTH), the hex column stays empty (the stored
+      -- locator bytes are in the block dumps), and the canonical text carries the data.
+      IF c.data_type IN ('CLOB', 'BLOB', 'NCLOB') THEN
+        v_sql := 'SELECT TO_CHAR(ID), ROWIDTOCHAR(ROWID), ' ||
+                 'CASE WHEN "' || c.column_name || '" IS NULL THEN ''NULL'' ELSE ''Typ=' ||
+                 CASE c.data_type WHEN 'BLOB' THEN '113' ELSE '112' END ||
+                 ' Len='' || DBMS_LOB.GETLENGTH("' || c.column_name || '") END, 0, '''', ';
+      ELSE
       v_sql := 'SELECT TO_CHAR(ID), ROWIDTOCHAR(ROWID), ' ||
                'CASE WHEN "' || c.column_name || '" IS NULL THEN ''NULL'' ELSE ' ||
                'REGEXP_SUBSTR(DUMP("' || c.column_name || '",1016,1,1), ''^Typ=[0-9]+ Len=[0-9]+'') END, ' ||
                'NVL(TO_NUMBER(REGEXP_SUBSTR(DUMP("' || c.column_name || '",1016,1,1), ''Len=([0-9]+)'', 1, 1, NULL, 1)), 0), ' ||
-               'NVL(REGEXP_SUBSTR(DUMP("' || c.column_name || '",1016,1,1), ''CharacterSet=[A-Z0-9]+''), ''''), ' ||
+               'NVL(REGEXP_SUBSTR(DUMP("' || c.column_name || '",1016,1,1), ''CharacterSet=[A-Z0-9]+''), ''''), ';
+      END IF;
+      v_sql := v_sql ||
                CASE
                  WHEN c.data_type LIKE 'RAW%' THEN 'TO_CLOB(RAWTOHEX("' || c.column_name || '"))'
+                 -- LOBs: canonical text = the LOB *data* (CLOB as ASCIISTR, BLOB as hex) prefixed
+                 -- with its length; the hex column still carries DUMP() of the stored bytes, i.e.
+                 -- the in-row locator (+ inline data) — exactly what ODR must reproduce from the block.
+                 WHEN c.data_type = 'CLOB' THEN 'TO_CLOB(''len='' || DBMS_LOB.GETLENGTH("' || c.column_name || '") || '':'') || TO_CLOB(ASCIISTR(DBMS_LOB.SUBSTR("' || c.column_name || '", 1000, 1))) || TO_CLOB(ASCIISTR(DBMS_LOB.SUBSTR("' || c.column_name || '", 1000, 1001))) || TO_CLOB(ASCIISTR(DBMS_LOB.SUBSTR("' || c.column_name || '", 1000, 2001))) || TO_CLOB(ASCIISTR(DBMS_LOB.SUBSTR("' || c.column_name || '", 1000, 3001)))'
+                 WHEN c.data_type = 'BLOB' THEN 'TO_CLOB(''len='' || DBMS_LOB.GETLENGTH("' || c.column_name || '") || '':'') || TO_CLOB(RAWTOHEX(DBMS_LOB.SUBSTR("' || c.column_name || '", 2000, 1))) || TO_CLOB(RAWTOHEX(DBMS_LOB.SUBSTR("' || c.column_name || '", 2000, 2001)))'
                  WHEN c.data_type LIKE '%CHAR%' THEN 'TO_CLOB(ASCIISTR("' || c.column_name || '"))'
                  WHEN c.data_type IN ('BINARY_FLOAT','BINARY_DOUBLE') THEN 'TO_CLOB(TO_CHAR("' || c.column_name || '",''TM9''))'
                  ELSE 'TO_CLOB(TO_CHAR("' || c.column_name || '"))'

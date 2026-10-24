@@ -72,6 +72,12 @@ impl Charset {
         })
     }
 
+    /// Varying-width Unicode database character sets (`AL32UTF8`, `UTF8`).
+    /// In such a database in-row `CLOB` data is stored as UCS-2 (`AL16UTF16`),
+    /// not in the database character set (LV-068).
+    pub const fn is_varying_width_unicode(self) -> bool {
+        matches!(self, Self::Al32Utf8 | Self::Utf8Cesu)
+    }
     /// Oracle name.
     pub const fn oracle_name(self) -> &'static str {
         match self {

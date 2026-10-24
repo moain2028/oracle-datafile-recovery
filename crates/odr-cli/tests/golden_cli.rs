@@ -14,6 +14,13 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Command;
 
+/// Golden v2 (2026-10-24 lab run: + `T_LOB_BASIC`, `T_LOB_SECURE`,
+/// `T_COMPRESS`). The damage tests keep `ODR_GOLDEN` (v1) because their
+/// seeds, block numbers and recall floors are measurements of those bytes.
+fn golden_v2() -> Option<PathBuf> {
+    std::env::var_os("ODR_GOLDEN_V2").map(PathBuf::from)
+}
+
 fn golden() -> Option<PathBuf> {
     std::env::var_os("ODR_GOLDEN").map(PathBuf::from)
 }
@@ -61,7 +68,7 @@ fn dict_json_lists_odr_tables() {
         .filter(|t| t["owner"] == "ODR")
         .map(|t| t["name"].as_str().unwrap())
         .collect();
-    assert_eq!(odr.len(), 15, "{odr:?}");
+    assert!(odr.len() >= 15, "{odr:?}");
     assert!(odr.contains(&"T_JOURNAL") && odr.contains(&"T_CL_EMP"));
 }
 
@@ -92,6 +99,7 @@ fn extract_every_heap_table_matches_oracle_counts_and_layers() {
         ("T_CL_DEPT", 0),
         ("T_CL_EMP", 0),
     ] {
+        let want_rejected = 0usize;
         let out_dir = tmp.join(table);
         let out = Command::new(env!("CARGO_BIN_EXE_odr"))
             .arg("extract")
@@ -100,8 +108,9 @@ fn extract_every_heap_table_matches_oracle_counts_and_layers() {
             .arg(&out_dir)
             .output()
             .unwrap();
-        assert!(
-            out.status.success(),
+        assert_eq!(
+            out.status.code(),
+            Some(if want_rejected > 0 { 2 } else { 0 }),
             "{table}: {}",
             String::from_utf8_lossy(&out.stderr)
         );
@@ -115,12 +124,13 @@ fn extract_every_heap_table_matches_oracle_counts_and_layers() {
             rows["rejected"].as_u64().unwrap() as usize,
         );
         assert_eq!(
-            v + i,
+            v + i + r,
             counts[table],
-            "{table}: verified+inferred == Oracle COUNT(*)"
+            "{table}: verified+inferred+rejected == Oracle COUNT(*)"
         );
         assert_eq!(i, want_inferred, "{table}: inferred rows");
-        assert_eq!(r, 0, "{table}: rejected rows");
+        assert_eq!(r, want_rejected, "{table}: rejected rows");
+
         // CSV line counts agree with the report (header + rows).
         let lines = |f: &str| {
             std::fs::read_to_string(out_dir.join(f))
@@ -152,13 +162,121 @@ fn extract_every_heap_table_matches_oracle_counts_and_layers() {
         assert_eq!(nl, if id == "2" { "" } else { "dflt" }, "id {id}");
     }
     let ver = std::fs::read_to_string(tmp.join("T_ADDCOL/verified.csv")).unwrap();
+    let addcol6 = std::fs::read_to_string(g.join("meta/rowids.psv"))
+        .unwrap()
+        .lines()
+        .find(|l| l.starts_with("T_ADDCOL|6|"))
+        .map(|l| {
+            let p: Vec<&str> = l.split('|').collect();
+            format!("16,{},{},6,new,8,", p[4], p[5])
+        })
+        .unwrap();
     assert!(
-        ver.lines()
-            .nth(1)
-            .unwrap()
-            .starts_with("16,2724,5,6,new,8,")
+        ver.lines().nth(1).unwrap().starts_with(&addcol6),
+        "T_ADDCOL new row: {ver}"
     );
     let _ = std::fs::remove_dir_all(&tmp);
+}
+
+/// LV-068 — inline LOBs are read from the row; out-of-line LOBs are
+/// rejected with their reason, never NULL. `T_LOB_BASIC` (`BasicFile`) and
+/// `T_LOB_SECURE` (`SecureFile`): 6 rows each — ascii CLOB + BLOB, Arabic
+/// CLOB (UCS-2 in row) + NULL BLOB, `EMPTY_CLOB/BLOB`, NULL both, 1900-byte
+/// inline, 6000-byte out of line. Golden v2 only.
+#[test]
+fn extract_reads_inline_lobs_and_rejects_out_of_line_ones() {
+    let Some(g) = golden_v2() else { return };
+    let tmp = std::env::temp_dir().join(format!("odr_cli_lob_{}", std::process::id()));
+    for table in ["T_LOB_BASIC", "T_LOB_SECURE"] {
+        let out_dir = tmp.join(table);
+        let out = Command::new(env!("CARGO_BIN_EXE_odr"))
+            .arg("extract")
+            .args(files(&g))
+            .args(["--table", &format!("ODR.{table}"), "--out"])
+            .arg(&out_dir)
+            .output()
+            .unwrap();
+        assert_eq!(
+            out.status.code(),
+            Some(2),
+            "{table}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let report: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(out_dir.join("report.json")).unwrap())
+                .unwrap();
+        let rows = &report["rows"];
+        assert_eq!(
+            (
+                rows["verified"].as_u64(),
+                rows["inferred"].as_u64(),
+                rows["rejected"].as_u64()
+            ),
+            (Some(5), Some(0), Some(1)),
+            "{table}: layers"
+        );
+        let rej = std::fs::read_to_string(out_dir.join("rejected.csv")).unwrap();
+        assert!(
+            rej.contains(",6,") && rej.contains("LOB stored out of line"),
+            "{table}: out-of-line LOB reason: {rej}"
+        );
+        let ver = std::fs::read_to_string(out_dir.join("verified.csv")).unwrap();
+        // Inline Arabic CLOB decoded from UCS-2 (LV-068), inline BLOB as hex.
+        assert!(
+            ver.contains(",1,inline ascii clob,DEADBEEF00FF,inline both"),
+            "{table}: {ver}"
+        );
+        assert!(
+            ver.contains(",2,فاتورة رقم 1 - مرفق,,"),
+            "{table}: Arabic CLOB: {ver}"
+        );
+        // EMPTY_CLOB()/EMPTY_BLOB() and NULL LOBs both print empty — verified rows.
+        assert!(
+            ver.contains(",3,,,empty lobs") && ver.contains(",4,,,null lobs"),
+            "{table}: {ver}"
+        );
+        let near = ver.lines().find(|l| l.contains(",5,")).unwrap();
+        assert_eq!(
+            near.matches('x').count(),
+            1900,
+            "{table}: 1900-char inline CLOB"
+        );
+        assert_eq!(
+            near.matches("79").count(),
+            1900,
+            "{table}: 1900-byte inline BLOB as hex"
+        );
+        // No sibling was tainted by the out-of-line locator (it is unavailable, not altered).
+        assert!(!rej.contains("block tainted"), "{table}: {rej}");
+    }
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+/// LV-069 — a BASIC-compressed table is refused as a whole (exit 1, no
+/// output files): its rows are symbol references, and printing them as
+/// values would be the wrong value the golden rule forbids. Golden v2 only.
+#[test]
+fn extract_refuses_compressed_table_explicitly() {
+    let Some(g) = golden_v2() else { return };
+    let out_dir = std::env::temp_dir().join(format!("odr_cli_compress_{}", std::process::id()));
+    let out = Command::new(env!("CARGO_BIN_EXE_odr"))
+        .arg("extract")
+        .args(files(&g))
+        .args(["--table", "ODR.T_COMPRESS", "--out"])
+        .arg(&out_dir)
+        .output()
+        .unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(1), "{err}");
+    assert!(
+        err.contains("compressed") && err.contains("LV-069"),
+        "{err}"
+    );
+    assert!(
+        !out_dir.join("verified.csv").exists(),
+        "no output for a refused table"
+    );
+    let _ = std::fs::remove_dir_all(&out_dir);
 }
 
 #[test]

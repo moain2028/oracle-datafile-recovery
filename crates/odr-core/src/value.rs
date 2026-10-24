@@ -15,8 +15,8 @@ use crate::charset::{self, Charset};
 use crate::error::DecodeError;
 use crate::types::char::raw_to_hex;
 use crate::types::{
-    IntervalDs, IntervalYm, OraDate, OraNumber, OraRowid, OraTimestamp, decode_binary_double,
-    decode_binary_float,
+    IntervalDs, IntervalYm, LobData, LobLocator, OraDate, OraNumber, OraRowid, OraTimestamp,
+    decode_binary_double, decode_binary_float,
 };
 use std::borrow::Cow;
 
@@ -63,6 +63,13 @@ pub enum ColumnType {
     LongRaw,
     /// `ROWID` / `UROWID`.
     Rowid,
+    /// `CLOB` (`national = false`) / `NCLOB` (`national = true`), type# 112.
+    Clob {
+        /// Uses the national character set (`NCLOB`).
+        national: bool,
+    },
+    /// `BLOB`, type# 113.
+    Blob,
     /// A type not decoded yet (LOB locators, `XMLType`, objects…); raw bytes are kept.
     Unsupported(u16),
 }
@@ -83,6 +90,8 @@ impl ColumnType {
             96 => Self::Char { national },
             100 => Self::BinaryFloat,
             101 => Self::BinaryDouble,
+            112 => Self::Clob { national },
+            113 => Self::Blob,
             180 => Self::Timestamp,
             181 => Self::TimestampTz,
             182 => Self::IntervalYm,
@@ -135,6 +144,15 @@ pub enum Value {
     },
     /// `RAW` bytes.
     Raw(Vec<u8>),
+    /// A LOB whose data is **not in the row** (LV-068): the locator decoded
+    /// but the value lives in the LOB segment, which ODR does not read yet.
+    /// Never exact, never NULL — the caller must report it as unavailable.
+    LobOutOfLine {
+        /// 10-byte LOB id from the locator.
+        lobid: [u8; 10],
+        /// The stored locator bytes.
+        raw: Vec<u8>,
+    },
     /// Bytes that do not decode as the declared type (REQ-003.3).
     Invalid {
         /// Original bytes.
@@ -156,7 +174,7 @@ impl Value {
     pub fn is_exact(&self) -> bool {
         match self {
             Self::Text { invalid, .. } => *invalid == 0,
-            Self::Invalid { .. } | Self::Unsupported { .. } => false,
+            Self::Invalid { .. } | Self::Unsupported { .. } | Self::LobOutOfLine { .. } => false,
             _ => true,
         }
     }
@@ -177,9 +195,9 @@ impl Value {
             Self::Rowid(r) => Cow::Owned(r.to_string()),
             Self::Text { text, .. } => Cow::Borrowed(text.as_str()),
             Self::Raw(b) => Cow::Owned(raw_to_hex(b)),
-            Self::Invalid { raw, .. } | Self::Unsupported { raw, .. } => {
-                Cow::Owned(format!("\\x{}", raw_to_hex(raw)))
-            }
+            Self::Invalid { raw, .. }
+            | Self::Unsupported { raw, .. }
+            | Self::LobOutOfLine { raw, .. } => Cow::Owned(format!("\\x{}", raw_to_hex(raw))),
         })
     }
 }
@@ -231,6 +249,52 @@ pub fn decode_value(raw: Option<&[u8]>, ty: ColumnType, cs: Charsets) -> Value {
         ColumnType::BinaryDouble => decode_binary_double(raw).map_or_else(invalid, Value::Double),
         ColumnType::Raw | ColumnType::LongRaw => Value::Raw(raw.to_vec()),
         ColumnType::Rowid => OraRowid::decode(raw).map_or_else(invalid, Value::Rowid),
+        ColumnType::Clob { .. } | ColumnType::Blob => {
+            let national = matches!(ty, ColumnType::Clob { national: true });
+            let character = matches!(ty, ColumnType::Clob { .. });
+            match LobLocator::parse(raw) {
+                Err(e) => invalid(e),
+                Ok(l) if l.character != character => invalid(DecodeError::malformed(
+                    "lob locator",
+                    4,
+                    "locator LOB type disagrees with the column type",
+                )),
+                Ok(LobLocator {
+                    data: LobData::OutOfLine,
+                    lobid,
+                    ..
+                }) => Value::LobOutOfLine {
+                    lobid,
+                    raw: raw.to_vec(),
+                },
+                Ok(LobLocator {
+                    data: LobData::Inline(bytes),
+                    ..
+                }) => {
+                    if character {
+                        // LV-068: in-row CLOB data is UCS-2 (AL16UTF16) when
+                        // the database character set is a varying-width
+                        // Unicode set; otherwise it is in the DB character set.
+                        let set = if national {
+                            cs.national
+                        } else if cs.database.is_varying_width_unicode() {
+                            Charset::Al16Utf16
+                        } else {
+                            cs.database
+                        };
+                        let d = charset::decode(bytes, set);
+                        let exact = d.is_exact();
+                        Value::Text {
+                            text: d.text.into_owned(),
+                            invalid: d.invalid,
+                            raw: (!exact).then(|| raw.to_vec()),
+                        }
+                    } else {
+                        Value::Raw(bytes.to_vec())
+                    }
+                }
+            }
+        }
         ColumnType::Unsupported(type_code) => Value::Unsupported {
             type_code,
             raw: raw.to_vec(),

@@ -759,3 +759,109 @@ fn wiped_header_requires_assume_and_downgrades_to_inferred() {
     assert_eq!(assumed.len(), 1, "report must flag the assumed input");
     let _ = std::fs::remove_dir_all(&tmp);
 }
+
+/// M4 — *dictionary-less mode never verifies and never guesses silently.*
+///
+/// `odr scavenge` on the ASSM file **without** the SYSTEM file: `T_JOURNAL`
+/// comes out as `OBJ_<dataobj>` with `COL_1..COL_7`, every row in
+/// `inferred.csv` (0 verified), the per-column type rule named in
+/// `_inference`, and every cell text identical to what the dictionary path
+/// produced — the types were inferred, the values were not.
+#[test]
+fn scavenge_without_system_infers_journal_exactly_and_never_verifies() {
+    let Some(g) = golden() else { return };
+    let tmp = std::env::temp_dir().join(format!("odr_cli_scavenge_{}", std::process::id()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    let assm = g.join("datafiles/odr_odr_assm01.dbf");
+    let truth_dir = tmp.join("truth");
+    assert!(extract_journal(&g, &assm, &truth_dir, &[]).status.success());
+    // Dictionary path: `_file,_block,_slot,ID,...` → key by (block, slot).
+    let truth_text = std::fs::read_to_string(truth_dir.join("verified.csv")).unwrap();
+    let truth: std::collections::HashMap<(String, String), String> = csv_records(&truth_text)
+        .into_iter()
+        .skip(1)
+        .map(|r| {
+            let mut it = r.splitn(4, ',');
+            let _file = it.next().unwrap();
+            let b = it.next().unwrap().to_owned();
+            let s = it.next().unwrap().to_owned();
+            ((b, s), it.next().unwrap().to_owned())
+        })
+        .collect();
+    assert_eq!(truth.len(), 20000);
+    let out_dir = tmp.join("scv");
+    let out = Command::new(env!("CARGO_BIN_EXE_odr"))
+        .arg("scavenge")
+        .arg(&assm)
+        .args(["--out"])
+        .arg(&out_dir)
+        .output()
+        .unwrap();
+    assert!(
+        matches!(out.status.code(), Some(0 | 2)),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let report: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(out_dir.join("report.json")).unwrap())
+            .unwrap();
+    let objects = report["objects"].as_array().unwrap();
+    // No object has a verified row: no dictionary ⇒ nothing is verified.
+    for o in objects {
+        assert_eq!(o["rows"]["verified"], 0, "{o}");
+    }
+    let journal = objects
+        .iter()
+        .find(|o| o["rows"]["inferred"] == 20000)
+        .unwrap_or_else(|| panic!("an object with 20,000 inferred rows (T_JOURNAL): {objects:?}"));
+    let types: Vec<&str> = journal["columns"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["inferred_type"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        types,
+        ["NUMBER", "DATE", "TEXT", "TEXT", "NUMBER", "NUMBER", "TEXT"],
+        "ID, DOC_DATE, ACCOUNT_NO, DESCRIPTION, DEBIT, CREDIT, CURRENCY"
+    );
+    assert!(
+        !out_dir
+            .join(journal["object"].as_str().unwrap())
+            .join("verified.csv")
+            .exists()
+    );
+    let inf = std::fs::read_to_string(
+        out_dir
+            .join(journal["object"].as_str().unwrap())
+            .join("inferred.csv"),
+    )
+    .unwrap();
+    let recs = csv_records(&inf);
+    assert_eq!(recs.len(), 20001);
+    assert_eq!(
+        recs[0],
+        "_file,_block,_slot,COL_1,COL_2,COL_3,COL_4,COL_5,COL_6,COL_7,_inference"
+    );
+    for r in &recs[1..] {
+        let (row, why) = r.rsplit_once(',').unwrap();
+        // `_inference` is quoted (it contains commas? no — spaces); it must
+        // name the mode and every column's rule.
+        assert!(
+            why.contains("dictionary-less") && why.contains("COL_2=DATE"),
+            "{why}"
+        );
+        let mut it = row.splitn(4, ',');
+        let _file = it.next().unwrap();
+        let key = (it.next().unwrap().to_owned(), it.next().unwrap().to_owned());
+        let cells = it.next().unwrap();
+        assert_eq!(
+            Some(cells),
+            truth.get(&key).map(String::as_str),
+            "block {} slot {}: scavenged cells differ from the dictionary path",
+            key.0,
+            key.1
+        );
+    }
+    let _ = std::fs::remove_dir_all(&tmp);
+}

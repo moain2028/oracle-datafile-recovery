@@ -4,6 +4,7 @@
 //! Exit codes: 0 ok · 1 usage/IO error · 2 completed with damaged blocks.
 
 mod dict_cmd;
+mod scavenge_cmd;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
@@ -75,6 +76,26 @@ enum Cmd {
         #[arg(long = "assume")]
         assume: Vec<String>,
     },
+    /// Dictionary-less extraction (no SYSTEM file): group data blocks by
+    /// data object id and write `OBJ_<objd>/inferred.csv` with `COL_n`
+    /// columns. Column types are inferred per object and named in
+    /// `_inference`; **no cell is ever verified** in this mode.
+    Scavenge {
+        /// Datafiles to scan (any; SYSTEM not needed).
+        files: Vec<PathBuf>,
+        /// Output directory (created).
+        #[arg(long)]
+        out: PathBuf,
+        /// Database character set for TEXT inference (default AL32UTF8).
+        #[arg(long)]
+        charset: Option<String>,
+        /// Only this data object id.
+        #[arg(long)]
+        objd: Option<u32>,
+        /// Skip objects with fewer rows than this (and nothing rejected).
+        #[arg(long, default_value_t = 1)]
+        min_rows: usize,
+    },
 }
 
 fn main() -> ExitCode {
@@ -118,6 +139,15 @@ fn run() -> Result<ExitCode> {
                 .map(|s| dict_cmd::Assume::parse(s))
                 .collect::<Result<Vec<_>>>()?;
             return dict_cmd::extract(&files, &table, &out, charset.as_deref(), &a);
+        }
+        Cmd::Scavenge {
+            files,
+            out,
+            charset,
+            objd,
+            min_rows,
+        } => {
+            return scavenge_cmd::scavenge(&files, &out, charset.as_deref(), objd, min_rows);
         }
     };
     if !BLOCK_SIZES.contains(&block_size) {

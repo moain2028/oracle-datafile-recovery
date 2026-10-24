@@ -49,7 +49,7 @@
 | 4 | **كل حقيقة لها رقم LV** | اكتشاف ⇒ صف `LV-xxx` في `docs/design/lab-verify.md` (الموقع، الادعاء، الدليل من الملف، الحالة) + إصلاح + اختبار يحمل الرقم في تعليقه. |
 | 5 | **التلف يُقاس لا يُفترض** | `odr-corrupt` حتمي (seed) على نسخة ⇒ precision/recall ضد الاستخراج النظيف ⇒ اختبار ذهبي دائم (`damaged_copies_never_yield_a_wrong_verified_cell`). |
 | 6 | **fuzz محلياً قبل CI** | 45 ث لكل هدف ملموس؛ كشف عطلين حقيقيين في أول تشغيل. `cd fuzz && cargo check --bins` إلزامي لأن `fuzz/` خارج الـ workspace. |
-| 7 | **كل عائق يُحلّ في الـ sandbox ويُوثَّق بالأمر الذي نجح** | runbook §6: Docker بلا iptables، توكن منتهٍ، `ORA-01489`، قرص ممتلئ، Windows CI (`read_text` لا CRLF). |
+| 7 | ~~Windows release~~ **✅ `v0.1.0-alpha` (2026-10-21)** — `release.yml` يبني odr+odr-corrupt لـ Windows/Linux على أي وسم `v*` | Release يحمل zip/tar.gz + sha256؛ لم يُجرَّب بعد على Windows حقيقي (الخبير) |
 | 8 | **قيود لغوية صارمة = أمان المحلّل** | `unsafe` ممنوع؛ indexing/unwrap/panic/arithmetic مرفوضة بـ `-D warnings` + `clippy::pedantic`؛ الاختبارات تحمل `#![allow]` موثقاً فقط. |
 | 9 | **PR واحد = ميزة واحدة مكتملة التوثيق** | كل PR يحدّث: lab-verify، CHANGELOG، LESSONS (إن > 30 دقيقة)، STATUS، مذكرة التسليم. يُدمج squash بعد CI أخضر (Linux + Windows + licenses + fuzz-smoke). |
 
@@ -114,8 +114,8 @@
 | **3** | ~~مختبر 19c~~ **✅ مختبر 21c XE منجز (LV-063، 2026-10-21)** — 19c الرسمي ما زال يحتاج رخصة | `gvenzl/oracle-xe:21-slim` بلا رخصة (runbook §7b)؛ golden ثانية `golden-21c-20261021`؛ اختبار `lab2_second_version_reads_like_oracle` بلا أي ثابت مُشفَّر | ✅ 15/15 جدول ROWIDs == أوراكل، 140k خلية، قاموس 0 مشاكل؛ اكتشاف HWM (LV-063) أصلح 21c دون تغيير 26ai. **✅ 11g XE 11.2 غير-CDB منجز أيضاً (2026-10-21):** `golden-11g-20261021`، قاموس 0 مشاكل، `lab2` يمر **بلا أي تغيير في الكود** (runbook §7b). 19c عند توفر الرخصة |
 | **4** | **LOB + الضغط** (M5) | في `10_corpus.sql`: جدول CLOB/BLOB (BasicFile ثم SecureFile) + جدول `COMPRESS BASIC`؛ `row/kdb.rs` يكشف flag 0x40 ويرفض صراحة الآن — ابدأ بـ LOB inline (< 4000) ثم LOB index/segment | recall ≥ 99% على LOB inline؛ الضغط: رفض صريح موثَّق حتى يُنفَّذ |
 | **5** | **إغلاق g** | في `lab_values_match_oracle_dump_byte_for_byte`: فكّ `\XXXX` (UNISTR escape) للنصوص العربية، وأضف T_CL_DEPT/T_CL_EMP عبر `read_cluster` | 141,613 / 141,613 قيمة |
-| **6** | **وضع بدون قاموس** (M4 — الميزة الفارقة) | `OBJ_<objd>` / `COL_<n>` من REQ-004، استدلال النوع من البايتات مع hold-out | دقة استدلال النوع ≥ 95% على مخططات لم تُستخدم في الضبط |
-| 7 | ~~Windows release~~ **✅ `v0.1.0-alpha` (2026-10-21)** — `release.yml` يبني odr+odr-corrupt لـ Windows/Linux على أي وسم `v*` | Release يحمل zip/tar.gz + sha256؛ لم يُجرَّب بعد على Windows حقيقي (الخبير) |
+| **6** | ~~وضع بدون قاموس~~ **✅ `odr scavenge` بداية منجزة (LV-066، 2026-10-21)** | لكل كتلة ثم ⅔ لكل كائن؛ RAW عند الغموض؛ LV-064 للكتلة المخالفة | ✅ 11g hold-out 39/39 (100%)، 8 امتناع؛ T_JOURNAL 20,000/20,000. **الباقي:** مرشحات INTERVAL/TSTZ/BINARY_*/NCHAR |
+
 
 **أول 30 دقيقة للوكيل القادم:** runbook §1–§2 → `gh pr list` (تأكد أن #10 الوحيد المفتوح) → تنزيل golden (runbook §4 البديل الأسرع، 62 MB؛ ملف `.sha256` يحمل مساراً مطلقاً — قارن الهاش يدوياً) → البوابات + `golden_lab` **11/11** (مع `ODR_GOLDEN2` من Release `golden-21c-20261021`) + `golden_cli` **7/7** → خطة اليوم في `docs/handover/2026-10-21_session_plan.md` (D ثم E)، وإلا الخطوة 4 (LOB).
 

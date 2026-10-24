@@ -14,8 +14,10 @@ by a documented rule and labelled with the rule), or `rejected` (with a reason).
 never default to NULL, never trust a published source over the real file.
 
 ## Read in this order (≈ 25 minutes) — do not skip
-0. `docs/handover/2026-10-24_session_handover.md` — **the latest state (2026-10-24): PR #33 merged,
-   step g closed (LV-067, 141,613/141,613), exact plan for LOB (M5) incl. export-script caveat.** Start here.
+0. `docs/handover/2026-10-24_session_handover.md` — **the latest state (2026-10-24): PRs #33–#37 merged;
+   step g closed (LV-067); LOB inline + out-of-line done (LV-068/070); compression refused (LV-069);
+   Release `v0.2.0-alpha` + `docs/field/QUICKSTART_ar.md`; §4 has the measured bytes of a real
+   COMPRESS BASIC block (start of M5 part 3).** Start here.
 0b. `docs/handover/2026-10-21_session_handover.md` — PRs #23–#31, LV-061..066, declared limits.
 1. `docs/handover/2026-10-18_final_handover.md` — **state, methodology, measured numbers, known
    limits, and the remaining plan with acceptance criteria (§6).** This is your work order.
@@ -54,9 +56,10 @@ Do not start feature work on a red baseline.
 
 ## Then work, in this order (acceptance criteria in `2026-10-24_session_handover.md` §3)
 1. ~~F — close step g~~ ✅ done 2026-10-24 (LV-067, PR #33).
-2. **Compression (M5 part 3)** — LOBs are done inline (LV-068, #34) **and out-of-line (LV-070, #35)**; compressed tables are refused (LV-069), decoding the 9ir2 symbol table is the remaining M5 item; golden v2 = `golden-26ai-20261024` (`ODR_GOLDEN_V2` for golden_cli). Old text:: add a LOB table to `lab/sql/10_corpus.sql`, rebuild a golden set (runbook §4/§7b), read inline LOBs; compressed blocks stay an explicit refusal until implemented.
+2. **Compression (M5 part 3)** — LOBs are done (inline LV-068 #34, out-of-line LV-070 #35). Compressed tables are refused (LV-069). Remaining: decode the 9ir2 symbol table. Start from the measured bytes in `2026-10-24_session_handover.md` §4 (block 5124 of golden v2 `odr_odr_assm01.dbf`: 12-byte extension after kdbh, kdbt at kd+26, tab0 = 46 symbols, tab1 = 692 rows, data row `2c 00 02 16 2d` = two symbol references). Acceptance: **2000/2000 T_COMPRESS values byte-identical to `rows.psv`** across blocks 5124–5126, red/green test citing a new LV row, otherwise the explicit refusal stays. Golden v2 = `golden-26ai-20261024` (`ODR_GOLDEN_V2` for golden_cli).
 3. **Extend `odr scavenge`** type candidates (INTERVAL, TSTZ, BINARY_*, NCHAR) **with hold-out**: tune on 26ai only, then measure on 11g and 21c without touching the code again.
-4. Anything the owner reports from the Windows trial (`docs/field/TRIAL_KIT_ar.md`).
+4. Anything the owner reports from the Windows trial (`docs/field/QUICKSTART_ar.md` → `TRIAL_KIT_ar.md`, Release `v0.2.0-alpha`).
+5. Owner-only (agent token lacks `workflows` scope): add `docs/field/QUICKSTART_ar.md` to the two copy lines in `.github/workflows/release.yml`.
 
 ## Workflow (every change, no exceptions)
 branch `lead/<feature>` → inspect the real bytes first → smallest fix → test that **fails without the fix**

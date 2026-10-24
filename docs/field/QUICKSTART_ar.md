@@ -9,7 +9,7 @@
 
 | ماذا | الملف | الحجم |
 |---|---|---|
-| الأداة | `odr-v0.2.0-alpha-x86_64-pc-windows-msvc.zip` (فيه `odr.exe` + `odr-corrupt.exe`) | ≈ 3 MB |
+| الأداة | `odr-v0.2.0-alpha-x86_64-pc-windows-msvc.zip` (فيه `odr.exe` + `odr-corrupt.exe`) | ≈ 1 MB |
 | ملفات التجربة | Release `golden-26ai-20261024` → `odr_golden_26ai_v2_20261024T085903Z.tar.gz` | 62 MB (≈ 480 MB مفكوكة) |
 
 فكّ الاثنين. على Windows يفك `tar -xzf` من PowerShell مباشرة. تحقق من `.sha256` بجانب كل ملف إن أردت.

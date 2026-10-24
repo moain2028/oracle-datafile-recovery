@@ -12,6 +12,7 @@
 
 pub mod bootstrap;
 pub mod kcvfh;
+pub mod lob;
 pub mod resolver;
 pub mod rows;
 pub mod schema;

@@ -46,6 +46,9 @@ const WHAT: &str = "lob locator";
 
 /// Fixed locator header length.
 pub const HEADER_LEN: usize = 20;
+/// Data bytes one `BasicFile` chunk block holds with the default 8 KiB block
+/// and `CHUNK 8192`: block − 0x38 `kdlb` header − 4 tail (measured, LV-070).
+pub const BASIC_CHUNK_PAYLOAD: u64 = 8192 - 0x38 - 4;
 
 /// LOB storage kind (locator byte 7).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,7 +66,17 @@ pub enum LobData<'a> {
     /// `EMPTY_CLOB()` / `EMPTY_BLOB()` is a locator with zero data bytes).
     Inline(&'a [u8]),
     /// Data lives in the LOB segment; only the locator is in the row.
-    OutOfLine,
+    OutOfLine {
+        /// Data length in bytes (CLOB: UCS-2 bytes = 2 × chars). `SecureFile`
+        /// stores it directly; `BasicFile` packs it as
+        /// `full_chunks << 16 | bytes_in_last_chunk` (LV-070). `None` only if
+        /// the inode kind carries no length.
+        bytes: Option<u64>,
+        /// Chunk map from the locator, in data order: `(rdba, blocks)`.
+        /// `BasicFile`: one entry per chunk DBA; `SecureFile`: one entry per
+        /// extent `(first rdba, block count)`. Measured on 26ai (LV-070).
+        chunks: Vec<(u32, u32)>,
+    },
 }
 
 /// A decoded LOB locator.
@@ -156,7 +169,52 @@ impl<'a> LobLocator<'a> {
                 }
                 Ok(LobData::Inline(data))
             }
-            0x05 => Ok(LobData::OutOfLine),
+            0x05 => {
+                // Measured (26ai, LV-070), BasicFile out-of-row inode:
+                //   CLOB 6000 chars (12,000 UCS-2 bytes), 2 chunks of 1 block:
+                //     `05 00 00 00 | 00 01 0f 1c | 00 00 00 00 | 00 02 | 04 00 0f 5f | 04 00 0f 63`
+                //   BLOB 6,000 bytes, 1 chunk:
+                //     `05 00 00 00 | 00 00 17 70 | 00 00 00 00 | 00 04 | 04 00 10 67`
+                //   [4..8]  u32 BE = full_chunks << 16 | bytes_in_last_chunk
+                //           (1·8132 + 0x0f1c = 12,000 ✓; 0 + 0x1770 = 6,000 ✓;
+                //           8132 = 8192 − 0x38 header − 4 tail = payload per block)
+                //   [12..14] u16 BE flags (2 = CLOB, 4 = BLOB) — not a count
+                //   [14..]  chunk DBAs, u32 BE each, to the end of the locator.
+                let packed = read_u32(body, 4, ByteOrder::Big)?;
+                let full = u64::from(packed >> 16);
+                let last = u64::from(packed & 0xFFFF);
+                let rest = body.get(14..).unwrap_or(&[]);
+                if rest.len() % 4 != 0 || rest.is_empty() {
+                    return Err(DecodeError::malformed(
+                        WHAT,
+                        36,
+                        "BasicFile chunk map is not a whole number of DBAs",
+                    ));
+                }
+                let mut chunks = Vec::with_capacity(rest.len() / 4);
+                for i in (0..rest.len()).step_by(4) {
+                    chunks.push((read_u32(rest, i, ByteOrder::Big)?, 1u32));
+                }
+                let nchunks = u64::try_from(chunks.len()).unwrap_or(u64::MAX);
+                // The packed length must agree with the chunk map: `full`
+                // whole chunks plus one partial (or exactly `full` when the
+                // last byte count is 0).
+                let expect_chunks = full.saturating_add(u64::from(last != 0));
+                if expect_chunks != nchunks {
+                    return Err(DecodeError::malformed(
+                        WHAT,
+                        26,
+                        "BasicFile packed length disagrees with the chunk map",
+                    ));
+                }
+                Ok(LobData::OutOfLine {
+                    bytes: Some(
+                        full.saturating_mul(BASIC_CHUNK_PAYLOAD)
+                            .saturating_add(last),
+                    ),
+                    chunks,
+                })
+            }
             _ => Err(DecodeError::malformed(
                 WHAT,
                 22,
@@ -216,7 +274,44 @@ impl<'a> LobLocator<'a> {
                 }
                 Ok(LobData::Inline(data))
             }
-            0x40 => Ok(LobData::OutOfLine),
+            0x40 => {
+                // Measured (26ai, LV-070), SecureFile out-of-row inode:
+                //   `40 90 | 00 0c | 21 | 00 2e e0 | 01 00 01 | 04 00 12 50 | 02`
+                //   [4]        flags: low nibble = length width k (0x21 → k=1 → 3 bytes)
+                //   [5..5+k+2] byte length BE (0x2ee0 = 12,000 UCS-2 bytes = 6,000 chars)
+                //   then `01 00 nn`: nn = extent-map entries
+                //   then nn × (u32 BE first rdba, u8 block count)
+                let k = usize::from(read_u8(body, 4)? & 0x0f);
+                if k > 3 {
+                    return Err(DecodeError::malformed(WHAT, 26, "SecureFile length width"));
+                }
+                let width = k.saturating_add(2);
+                let len_bytes = crate::bytes::slice_at(body, 5, width)?;
+                let bytes = len_bytes.iter().fold(0u64, |acc, &b| {
+                    acc.saturating_mul(256).saturating_add(u64::from(b))
+                });
+                let mut at = 5usize.saturating_add(width);
+                let nmap = usize::from(read_u8(body, at.saturating_add(2))?);
+                at = at.saturating_add(3);
+                let mut chunks = Vec::with_capacity(nmap);
+                for _ in 0..nmap {
+                    let dba = read_u32(body, at, ByteOrder::Big)?;
+                    let nblk = u32::from(read_u8(body, at.saturating_add(4))?);
+                    chunks.push((dba, nblk));
+                    at = at.saturating_add(5);
+                }
+                if at != body.len() {
+                    return Err(DecodeError::malformed(
+                        WHAT,
+                        22,
+                        "SecureFile extent map does not fill the locator",
+                    ));
+                }
+                Ok(LobData::OutOfLine {
+                    bytes: Some(bytes),
+                    chunks,
+                })
+            }
             _ => Err(DecodeError::malformed(
                 WHAT,
                 22,

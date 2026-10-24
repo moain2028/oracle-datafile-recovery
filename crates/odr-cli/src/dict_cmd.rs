@@ -592,7 +592,51 @@ pub(crate) fn extract(
             }
             Ok(r) => {
                 let stored: Vec<Option<&[u8]>> = r.columns.iter().map(|c| c.as_deref()).collect();
-                let cells = materialize(&t, &stored, cs);
+                let mut cells = materialize(&t, &stored, cs);
+                // LV-070: out-of-line LOBs — follow the locator's chunk map
+                // into the LOB segment. Every chunk block must pass
+                // integrity, be of the LOB block type and carry this LOB's
+                // id; the assembled length must equal the locator's. Then
+                // the value is as verified as any inline value; otherwise
+                // the row is rejected with the exact reason.
+                let mut lob_fail: Option<String> = None;
+                for (i, cell) in cells.iter_mut().enumerate() {
+                    let Cell::Verified(Value::LobOutOfLine { raw, .. }) = cell else {
+                        continue;
+                    };
+                    let Ok(loc) = odr_core::types::LobLocator::parse(raw) else {
+                        continue;
+                    };
+                    match odr_core::dict::lob::read_out_of_line(&set, hdr_file, &loc, None) {
+                        Ok(bytes) => {
+                            let v = if loc.character {
+                                let setc = if cs.database.is_varying_width_unicode() {
+                                    Charset::Al16Utf16
+                                } else {
+                                    cs.database
+                                };
+                                let d = odr_core::charset::decode(&bytes.data, setc);
+                                let exact = d.is_exact();
+                                Value::Text {
+                                    text: d.text.into_owned(),
+                                    invalid: d.invalid,
+                                    raw: (!exact).then(|| bytes.data.clone()),
+                                }
+                            } else {
+                                Value::Raw(bytes.data)
+                            };
+                            *cell = Cell::Verified(v);
+                        }
+                        Err(e) => {
+                            lob_fail.get_or_insert_with(|| {
+                                format!(
+                                    "column {}: LOB out of line could not be assembled: {e:?} (LV-070)",
+                                    i.saturating_add(1)
+                                )
+                            });
+                        }
+                    }
+                }
                 let (_, b) = Rdba(r.provenance.rdba).split(scheme);
                 let mut line = format!("{},{b},{}", r.provenance.file, r.rowid_row);
                 for c in &cells {
@@ -601,7 +645,10 @@ pub(crate) fn extract(
                         line.push_str(&csv(&v));
                     }
                 }
-                let layer = match classify(&cells, r.block_status, r.structural) {
+                let layer = match lob_fail.map_or_else(
+                    || classify(&cells, r.block_status, r.structural),
+                    Layer::Rejected,
+                ) {
                     // LV-065: torn block (tail mismatch) — the head of the
                     // block is the version its header names, the tail is an
                     // older/newer write. A row lying wholly below the first

@@ -178,50 +178,48 @@ fn extract_every_heap_table_matches_oracle_counts_and_layers() {
     let _ = std::fs::remove_dir_all(&tmp);
 }
 
-/// LV-068 — inline LOBs are read from the row; out-of-line LOBs are
-/// rejected with their reason, never NULL. `T_LOB_BASIC` (`BasicFile`) and
-/// `T_LOB_SECURE` (`SecureFile`): 6 rows each — ascii CLOB + BLOB, Arabic
-/// CLOB (UCS-2 in row) + NULL BLOB, `EMPTY_CLOB/BLOB`, NULL both, 1900-byte
-/// inline, 6000-byte out of line. Golden v2 only.
+/// A damage recipe applied to a copy of the ASSM file (LV-070 test).
+type Damage<'a> = Box<dyn Fn(&mut Vec<u8>) + 'a>;
+
+/// LV-068 / LV-070 — inline LOBs are read from the row; out-of-line LOBs
+/// are assembled from the LOB segment through the locator's chunk map
+/// (every chunk block: integrity + type + LOB id + exact length), so all
+/// 6 rows of `T_LOB_BASIC` (`BasicFile`) and `T_LOB_SECURE` (`SecureFile`)
+/// are verified. Then three damaged copies prove the refusal path: a bit
+/// flip inside a chunk ⇒ `ChecksumFail`, a zeroed chunk ⇒ `Zeroed`, a
+/// chunk overwritten by another LOB's block (valid checksum) ⇒
+/// `ForeignLob` — the row is rejected with the reason, the other 5 rows
+/// stay verified, nothing is printed as a partial LOB. Golden v2 only.
 #[test]
-fn extract_reads_inline_lobs_and_rejects_out_of_line_ones() {
+fn extract_assembles_out_of_line_lobs_and_refuses_damaged_chunks() {
     let Some(g) = golden_v2() else { return };
     let tmp = std::env::temp_dir().join(format!("odr_cli_lob_{}", std::process::id()));
+    std::fs::create_dir_all(&tmp).unwrap();
+    let assm = g.join("datafiles/odr_odr_assm01.dbf");
+    let sys = g.join("datafiles/FREE_FREEPDB1_system01.dbf");
+    let run = |table: &str, assm: &std::path::Path, out_dir: &std::path::Path| {
+        Command::new(env!("CARGO_BIN_EXE_odr"))
+            .arg("extract")
+            .arg(&sys)
+            .arg(assm)
+            .args(["--table", &format!("ODR.{table}"), "--out"])
+            .arg(out_dir)
+            .output()
+            .unwrap()
+    };
+    // Clean: 6/6 verified, out-of-line 6000-char CLOB and 6000-byte BLOB included.
+    let mut chunk_blocks: Vec<(String, u32)> = Vec::new();
     for table in ["T_LOB_BASIC", "T_LOB_SECURE"] {
         let out_dir = tmp.join(table);
-        let out = Command::new(env!("CARGO_BIN_EXE_odr"))
-            .arg("extract")
-            .args(files(&g))
-            .args(["--table", &format!("ODR.{table}"), "--out"])
-            .arg(&out_dir)
-            .output()
-            .unwrap();
+        let out = run(table, &assm, &out_dir);
         assert_eq!(
             out.status.code(),
-            Some(2),
+            Some(0),
             "{table}: {}",
             String::from_utf8_lossy(&out.stderr)
         );
-        let report: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(out_dir.join("report.json")).unwrap())
-                .unwrap();
-        let rows = &report["rows"];
-        assert_eq!(
-            (
-                rows["verified"].as_u64(),
-                rows["inferred"].as_u64(),
-                rows["rejected"].as_u64()
-            ),
-            (Some(5), Some(0), Some(1)),
-            "{table}: layers"
-        );
-        let rej = std::fs::read_to_string(out_dir.join("rejected.csv")).unwrap();
-        assert!(
-            rej.contains(",6,") && rej.contains("LOB stored out of line"),
-            "{table}: out-of-line LOB reason: {rej}"
-        );
         let ver = std::fs::read_to_string(out_dir.join("verified.csv")).unwrap();
-        // Inline Arabic CLOB decoded from UCS-2 (LV-068), inline BLOB as hex.
+        assert_eq!(ver.lines().count(), 7, "{table}: 6 verified rows\n{ver}");
         assert!(
             ver.contains(",1,inline ascii clob,DEADBEEF00FF,inline both"),
             "{table}: {ver}"
@@ -230,26 +228,132 @@ fn extract_reads_inline_lobs_and_rejects_out_of_line_ones() {
             ver.contains(",2,فاتورة رقم 1 - مرفق,,"),
             "{table}: Arabic CLOB: {ver}"
         );
-        // EMPTY_CLOB()/EMPTY_BLOB() and NULL LOBs both print empty — verified rows.
         assert!(
             ver.contains(",3,,,empty lobs") && ver.contains(",4,,,null lobs"),
             "{table}: {ver}"
         );
         let near = ver.lines().find(|l| l.contains(",5,")).unwrap();
-        assert_eq!(
-            near.matches('x').count(),
-            1900,
-            "{table}: 1900-char inline CLOB"
+        assert_eq!(near.matches('x').count(), 1900, "{table}: inline CLOB");
+        assert_eq!(near.matches("79").count(), 1900, "{table}: inline BLOB hex");
+        let big = ver.lines().find(|l| l.contains(",6,")).unwrap();
+        let cols: Vec<&str> = big.split(',').collect();
+        assert_eq!(cols[4].len(), 6000, "{table}: out-of-line CLOB chars");
+        assert!(cols[4].bytes().all(|b| b == b'L'), "{table}: CLOB content");
+        assert_eq!(cols[5].len(), 12_000, "{table}: out-of-line BLOB hex");
+        assert!(
+            cols[5].as_bytes().chunks(2).all(|c| c == b"4D"),
+            "{table}: BLOB content"
         );
+        // Chunk blocks named by the locator (from the clean block bytes).
+        let img = std::fs::read(&assm).unwrap();
+        let locs = lob_locators_of_row6(&img, &g, table);
+        for (col, loc) in locs {
+            if let odr_core::types::LobData::OutOfLine { chunks, .. } = loc.data {
+                chunk_blocks.push((
+                    format!("{table}:{col}"),
+                    odr_core::block::Rdba(chunks[0].0).block(),
+                ));
+            }
+        }
+    }
+    assert_eq!(chunk_blocks.len(), 4, "{chunk_blocks:?}");
+    // Damage the chunk blocks three ways; each must reject row 6 only.
+    let clean = std::fs::read(&assm).unwrap();
+    let bs = 8192usize;
+    let find = |key: &str| chunk_blocks.iter().find(|(k, _)| k == key).unwrap().1 as usize;
+    let cases: [(&str, &str, Damage<'_>, &str); 3] = [
+        (
+            "bitflip",
+            "T_LOB_BASIC",
+            Box::new(|d: &mut Vec<u8>| {
+                let b = find("T_LOB_BASIC:C");
+                d[b * bs + 0x100] ^= 1;
+            }),
+            "ChecksumFail",
+        ),
+        (
+            "zeroed",
+            "T_LOB_SECURE",
+            Box::new(|d: &mut Vec<u8>| {
+                let b = find("T_LOB_SECURE:B");
+                d[b * bs..(b + 1) * bs].fill(0);
+            }),
+            "Zeroed",
+        ),
+        (
+            "foreign",
+            "T_LOB_BASIC",
+            Box::new(|d: &mut Vec<u8>| {
+                let (b, o) = (find("T_LOB_BASIC:B"), find("T_LOB_BASIC:C"));
+                let src: Vec<u8> = d[o * bs..(o + 1) * bs].to_vec();
+                d[b * bs..(b + 1) * bs].copy_from_slice(&src);
+            }),
+            "ForeignLob",
+        ),
+    ];
+    for (name, table, damage, want) in cases {
+        let mut d = clean.clone();
+        damage(&mut d);
+        let dmg = tmp.join(format!("{name}.dbf"));
+        std::fs::write(&dmg, &d).unwrap();
+        let out_dir = tmp.join(format!("out_{name}"));
+        let out = run(table, &dmg, &out_dir);
         assert_eq!(
-            near.matches("79").count(),
-            1900,
-            "{table}: 1900-byte inline BLOB as hex"
+            out.status.code(),
+            Some(2),
+            "{name}: {}",
+            String::from_utf8_lossy(&out.stderr)
         );
-        // No sibling was tainted by the out-of-line locator (it is unavailable, not altered).
-        assert!(!rej.contains("block tainted"), "{table}: {rej}");
+        let ver = std::fs::read_to_string(out_dir.join("verified.csv")).unwrap();
+        assert_eq!(
+            ver.lines().count(),
+            6,
+            "{name}: 5 rows stay verified\n{ver}"
+        );
+        assert!(
+            !ver.lines().any(|l| l.contains(",6,")),
+            "{name}: row 6 must not be verified"
+        );
+        let rej = std::fs::read_to_string(out_dir.join("rejected.csv")).unwrap();
+        assert!(
+            rej.contains("LOB out of line could not be assembled")
+                && rej.contains(want)
+                && rej.contains("LV-070"),
+            "{name}: {rej}"
+        );
+        let _ = std::fs::remove_file(&dmg);
     }
     let _ = std::fs::remove_dir_all(&tmp);
+}
+
+/// Locators of row ID=6 of a LOB table, read straight from the block the
+/// ROWID in `meta/rowids.psv` points at: `(column name, locator)`.
+fn lob_locators_of_row6<'a>(
+    img: &'a [u8],
+    g: &std::path::Path,
+    table: &str,
+) -> Vec<(&'static str, odr_core::types::LobLocator<'a>)> {
+    let line = std::fs::read_to_string(g.join("meta/rowids.psv"))
+        .unwrap()
+        .lines()
+        .find(|l| l.starts_with(&format!("{table}|6|")))
+        .unwrap()
+        .to_owned();
+    let p: Vec<&str> = line.split('|').collect();
+    let (block, slot): (usize, u16) = (p[4].parse().unwrap(), p[5].parse().unwrap());
+    let db = odr_core::row::DataBlock::parse(
+        &img[block * 8192..(block + 1) * 8192],
+        odr_core::ByteOrder::Little,
+    )
+    .unwrap();
+    let row = db.row(slot).unwrap().unwrap();
+    let mut out = Vec::new();
+    for (name, idx) in [("C", 1usize), ("B", 2)] {
+        if let Some(Some(raw)) = row.columns.get(idx) {
+            out.push((name, odr_core::types::LobLocator::parse(raw).unwrap()));
+        }
+    }
+    out
 }
 
 /// LV-069 — a BASIC-compressed table is refused as a whole (exit 1, no

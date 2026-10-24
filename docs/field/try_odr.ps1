@@ -27,10 +27,27 @@ function Ok($msg)    { $script:Pass++; Write-Host "  PASS  $msg" -ForegroundColo
 function Bad($msg)   { $script:Fail++; Write-Host "  FAIL  $msg" -ForegroundColor Red }
 function Check($cond, $msg) { if ($cond) { Ok $msg } else { Bad $msg } }
 
-function Get-File($url, $out) {
+# The repository and its Releases are private: download with `gh` (logged in as an
+# invited reader) or with $env:ODR_TOKEN = <read token>; otherwise copy the files into -Dir.
+function Get-File($url, $out, $tag) {
     if (Test-Path $out) { Write-Host "  (exists) $out"; return }
-    Write-Host "  downloading $url"
-    Invoke-WebRequest -Uri $url -OutFile $out -UseBasicParsing
+    $name = Split-Path $out -Leaf
+    Write-Host "  downloading $name"
+    if (Get-Command gh -ErrorAction SilentlyContinue) {
+        & gh release download $tag -R moain2026/oracle-datafile-recovery -p $name -O $out 2>$null
+        if ($LASTEXITCODE -eq 0 -and (Test-Path $out)) { return }
+    }
+    if ($env:ODR_TOKEN) {
+        $h = @{ Authorization = "Bearer $env:ODR_TOKEN" }
+        $rel = Invoke-RestMethod -Headers $h -Uri "https://api.github.com/repos/moain2026/oracle-datafile-recovery/releases/tags/$tag"
+        $asset = $rel.assets | Where-Object name -eq $name | Select-Object -First 1
+        if ($asset) {
+            $h["Accept"] = "application/octet-stream"
+            Invoke-WebRequest -Headers $h -Uri $asset.url -OutFile $out -UseBasicParsing
+            return
+        }
+    }
+    throw "cannot download ${name}: private release - run 'gh auth login' as an invited reader, set `$env:ODR_TOKEN, or copy the file into $Dir"
 }
 
 function Verify-Sha($file, $shaFile) {
@@ -71,11 +88,11 @@ $Zip = "odr-$Tag-x86_64-pc-windows-msvc.zip"
 $Tgz = "odr_golden_26ai_v2_20261024T085903Z.tar.gz"
 if (-not $SkipDownload) {
     if ($ToolDir -eq "") {
-        Get-File "$Repo/releases/download/$Tag/$Zip"        $Zip
-        Get-File "$Repo/releases/download/$Tag/$Zip.sha256" "$Zip.sha256"
+        Get-File "$Repo/releases/download/$Tag/$Zip"        $Zip        $Tag
+        Get-File "$Repo/releases/download/$Tag/$Zip.sha256" "$Zip.sha256" $Tag
     }
-    Get-File "$Repo/releases/download/$Golden/$Tgz"          $Tgz
-    Get-File "$Repo/releases/download/$Golden/odr_golden_26ai_v2.sha256" "odr_golden_26ai_v2.sha256"
+    Get-File "$Repo/releases/download/$Golden/$Tgz"          $Tgz "$Golden"
+    Get-File "$Repo/releases/download/$Golden/odr_golden_26ai_v2.sha256" "odr_golden_26ai_v2.sha256" $Golden
 }
 if ($ToolDir -eq "") { Verify-Sha $Zip "$Zip.sha256" }
 Verify-Sha $Tgz "odr_golden_26ai_v2.sha256"
@@ -155,11 +172,20 @@ Check ($rej.Count -eq 1 -and $rej[0].ID -eq "6" -and $rej[0]._reason -match 'LOB
     "only row 6 rejected, reason: $($rej[0]._reason)"
 
 # ---------------------------------------------------------------- 6. explicit refusal
-Step "6. Compressed table (v0.2.0-alpha: refused, not guessed; LV-071 builds decode it)"
+Step "6. Compressed table (COMPRESS BASIC): v0.2.0-alpha refuses it, later builds decode it (LV-071)"
 $c = & $Odr extract $S $A --table ODR.T_COMPRESS --out out/compress 2>&1
-Check ($LASTEXITCODE -eq 1) "T_COMPRESS exit code $LASTEXITCODE (expected 1)"
-Check (("$c" -match 'compressed') -and ("$c" -match 'LV-069')) "message names compression and LV-069"
-Check (-not (Test-Path out/compress/verified.csv)) "no verified.csv written for a refused table"
+$code = $LASTEXITCODE
+if ($code -eq 1) {
+    Ok "T_COMPRESS exit code 1: refused, not guessed"
+    Check (("$c" -match 'compressed') -and ("$c" -match 'LV-069')) "message names compression and LV-069"
+    Check (-not (Test-Path out/compress/verified.csv)) "no verified.csv written for a refused table"
+} else {
+    $r = Run-Extract @($S, $A, "--table", "ODR.T_COMPRESS") "out/compress"
+    Expect-Layers $r 2000 0 0 0 "T_COMPRESS decoded through the symbol table (LV-071)"
+    $csv = Import-Csv "out/compress/verified.csv"
+    $bad = @($csv | Where-Object { $_.V -ne ("repeated value " + ([int]$_.ID % 5)) -or [int]$_.N -ne ([int]$_.ID % 7) })
+    Check ($bad.Count -eq 0) "every decoded row equals the generating formula (V = 'repeated value ' + ID mod 5, N = ID mod 7): $($bad.Count) wrong"
+}
 
 # ---------------------------------------------------------------- 7. source untouched
 Step "7. Source datafile untouched"

@@ -5,6 +5,8 @@
 Enterprise-grade, DUL-class tool for extracting data from corrupted / unopenable Oracle datafiles without a running Oracle instance.
 
 ## Try it (Windows / Linux, no Oracle needed)
+> **Private repository** (ADR-0007): code, lab notes and releases are not public. External evaluators receive the release archive and `docs/field/*` only.
+
 Download `odr-<ver>-x86_64-pc-windows-msvc.zip` or the Linux tarball from **Releases**, plus a golden set (`golden-26ai-20261018`, `golden-21c-20261021`). Then follow **`docs/field/TRIAL_KIT_ar.md`** (Arabic): scan → dict → extract, make deterministic damage with `odr-corrupt`, and compare the three layers against the clean extraction.
 
 ## Repository layout

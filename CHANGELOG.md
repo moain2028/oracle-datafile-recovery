@@ -1,6 +1,8 @@
 # Changelog
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 ## [Unreleased]
+### Added
+- **`odr scavenge` type candidates extended with hold-out (LV-072)**: `TIMESTAMP WITH TIME ZONE`, `INTERVAL YEAR TO MONTH`, `INTERVAL DAY TO SECOND`, `LOB` locator. Rejected after measurement: NTEXT (collides with 2-byte NUMBERs and even-length ASCII — 17 columns became ambiguous), BINARY_FLOAT/DOUBLE (any 4/8 bytes decode). Tuned on 26ai only; 11g and 21c measured without code change: **0 wrong on all three** (26ai 45 named/6 abstain, 11g 46/5, 21c 45/6). New test `scavenge_type_candidates_never_name_a_wrong_type` runs the protocol on `ODR_GOLDEN` + `ODR_GOLDEN2`.
 ### Changed
 - **IP protection (ADR-0007)**: repository and releases made **private**; `docs/field/README_TRIAL.md` (usage-only readme for the archive); trial scripts download from the private release via `gh` or `ODR_TOKEN`, with a clear stop message when unauthenticated; step 6 accepts both the v0.2.0-alpha refusal and the LV-071 decode (verified against the formula `V = 'repeated value ' || ID mod 5`, `N = ID mod 7`). Owner action remaining: `release.yml` should copy `README_TRIAL.md`, `QUICKSTART_ar.md`, `try_odr.*` and **stop copying `CHANGELOG.md`/`README.md`** into the archive.
 ### Added

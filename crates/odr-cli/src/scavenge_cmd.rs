@@ -30,7 +30,7 @@ use odr_core::charset::{self, Charset};
 use odr_core::dict::kcvfh::FileHeader;
 use odr_core::row::DataBlock;
 use odr_core::source::Evidence;
-use odr_core::types::{OraDate, OraNumber, OraTimestamp};
+use odr_core::types::{IntervalDs, IntervalYm, LobLocator, OraDate, OraNumber, OraTimestamp};
 use odr_core::value::{ColumnType, decode_value};
 use std::collections::BTreeMap;
 use std::io::Write as _;
@@ -41,18 +41,53 @@ use std::path::{Path, PathBuf};
 enum Guess {
     Date,
     Timestamp,
+    /// `TIMESTAMP WITH TIME ZONE`: 13 bytes, valid date/time, offset or
+    /// region in range (LV-072).
+    TimestampTz,
+    /// `INTERVAL YEAR TO MONTH`: 5 bytes, months −11..11, signs agree.
+    IntervalYm,
+    /// `INTERVAL DAY TO SECOND`: 11 bytes, fields in range, signs agree.
+    IntervalDs,
     Number,
     Text,
+    /// A LOB locator (`00 70 00 01` header, LV-068) — CLOB/BLOB. Only the
+    /// inline part is printed; out-of-line locators stay hex.
+    Lob,
     Raw,
 }
+
+/// Candidates tried, in display order. `Raw` is the fallback, not a candidate.
+///
+/// **Not** a candidate (measured, LV-072): national text (`AL16UTF16`).
+/// Every 2-byte NUMBER (`c1 02`…) is also one printable UTF-16 code unit
+/// and every even-length ASCII string is valid UTF-16 too, so on the 26ai
+/// corpus an NTEXT candidate made 15 NUMBER and 2 TEXT columns ambiguous
+/// without naming a single national column unambiguously. National text
+/// therefore stays `RAW` (hex) — a declared limit of byte-only inference.
+/// `BINARY_FLOAT`/`BINARY_DOUBLE` are not candidates either: any 4/8 bytes
+/// decode, so they would fit every NUMBER/DATE column of that width.
+const CANDIDATES: [Guess; 8] = [
+    Guess::Date,
+    Guess::Timestamp,
+    Guess::TimestampTz,
+    Guess::IntervalYm,
+    Guess::IntervalDs,
+    Guess::Number,
+    Guess::Text,
+    Guess::Lob,
+];
 
 impl Guess {
     const fn name(self) -> &'static str {
         match self {
             Self::Date => "DATE",
             Self::Timestamp => "TIMESTAMP",
+            Self::TimestampTz => "TIMESTAMP WITH TIME ZONE",
+            Self::IntervalYm => "INTERVAL YEAR TO MONTH",
+            Self::IntervalDs => "INTERVAL DAY TO SECOND",
             Self::Number => "NUMBER",
             Self::Text => "TEXT",
+            Self::Lob => "LOB",
             Self::Raw => "RAW",
         }
     }
@@ -61,11 +96,23 @@ impl Guess {
         match self {
             Self::Date => Some(ColumnType::Date),
             Self::Timestamp => Some(ColumnType::Timestamp),
+            Self::TimestampTz => Some(ColumnType::TimestampTz),
+            Self::IntervalYm => Some(ColumnType::IntervalYm),
+            Self::IntervalDs => Some(ColumnType::IntervalDs),
             Self::Number => Some(ColumnType::Number),
             Self::Text => Some(ColumnType::Varchar2 { national: false }),
+            // Character/binary is read from the locator itself; the column
+            // type only selects the LOB branch of the decoder.
+            Self::Lob => Some(ColumnType::Clob { national: false }),
             Self::Raw => None,
         }
     }
+}
+
+/// Printable text: no C0 control bytes other than TAB/LF/CR.
+fn printable(raw: &[u8]) -> bool {
+    raw.iter()
+        .all(|&b| b >= 0x20 || matches!(b, 0x09 | 0x0A | 0x0D))
 }
 
 /// Does `raw` decode *strictly* as `g`? Strict means the decoder accepts
@@ -74,16 +121,15 @@ fn fits(raw: &[u8], g: Guess, cs: Charset) -> bool {
     match g {
         Guess::Date => OraDate::decode(raw).is_ok(),
         Guess::Timestamp => OraTimestamp::decode(raw).is_ok(),
+        Guess::TimestampTz => OraTimestamp::decode_tz(raw).is_ok(),
+        Guess::IntervalYm => IntervalYm::decode(raw).is_ok(),
+        Guess::IntervalDs => IntervalDs::decode(raw).is_ok(),
         Guess::Number => OraNumber::decode(raw).is_ok(),
         // Text: exact in the character set and free of C0 control bytes
         // other than TAB/LF/CR — binary NUMBER/DATE bytes almost always
         // contain one, which is what keeps them out of this bucket.
-        Guess::Text => {
-            charset::decode(raw, cs).is_exact()
-                && raw
-                    .iter()
-                    .all(|&b| b >= 0x20 || matches!(b, 0x09 | 0x0A | 0x0D))
-        }
+        Guess::Text => charset::decode(raw, cs).is_exact() && printable(raw),
+        Guess::Lob => LobLocator::parse(raw).is_ok(),
         Guess::Raw => true,
     }
 }
@@ -139,7 +185,7 @@ fn infer(by_block: &[BlockValues<'_>], cs: Charset) -> ColumnGuess {
         };
     }
     let fits_block = |g: Guess, vals: &[&[u8]]| vals.iter().all(|v| fits(v, g, cs));
-    let reaching: Vec<Guess> = [Guess::Date, Guess::Timestamp, Guess::Number, Guess::Text]
+    let reaching: Vec<Guess> = CANDIDATES
         .into_iter()
         .filter(|&g| {
             let n = evidence.iter().filter(|(_, v)| fits_block(g, v)).count();

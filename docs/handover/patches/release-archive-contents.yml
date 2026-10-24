@@ -1,0 +1,96 @@
+name: Release
+# Builds odr + odr-corrupt for Windows and Linux on a version tag (v*) and
+# attaches them, with SHA-256 sums, to the GitHub Release. Binaries are built
+# by CI only — never from a developer sandbox (chain of custody, ADR-0005).
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            archive: zip
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            archive: tar.gz
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.99.0"
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+      - name: Test (release profile)
+        run: cargo test --workspace --locked --release
+      - name: Build
+        run: cargo build --release --locked -p odr-cli -p odr-corrupt --target ${{ matrix.target }}
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $v = "${{ github.ref_name }}"; if ($v -eq "") { $v = "dev" }
+          $d = "odr-$v-${{ matrix.target }}"
+          New-Item -ItemType Directory -Force $d | Out-Null
+          Copy-Item target/${{ matrix.target }}/release/odr.exe $d/
+          Copy-Item target/${{ matrix.target }}/release/odr-corrupt.exe $d/
+          Copy-Item LICENSE $d/
+          Copy-Item docs/field/README_TRIAL.md $d/README.md
+          Copy-Item docs/field/QUICKSTART_ar.md, docs/field/TRIAL_KIT_ar.md, docs/field/try_odr.ps1, docs/field/try_odr.sh $d/
+          Compress-Archive -Path $d -DestinationPath "$d.zip"
+          (Get-FileHash "$d.zip" -Algorithm SHA256).Hash.ToLower() + "  $d.zip" | Out-File -Encoding ascii "$d.zip.sha256"
+      - name: Package (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          v="${{ github.ref_name }}"; [ -z "$v" ] && v=dev
+          d="odr-$v-${{ matrix.target }}"
+          mkdir -p "$d"
+          cp target/${{ matrix.target }}/release/odr target/${{ matrix.target }}/release/odr-corrupt "$d/"
+          cp LICENSE "$d/"
+          cp docs/field/README_TRIAL.md "$d/README.md"
+          cp docs/field/QUICKSTART_ar.md docs/field/TRIAL_KIT_ar.md docs/field/try_odr.ps1 docs/field/try_odr.sh "$d/"
+          tar -czf "$d.tar.gz" "$d"
+          sha256sum "$d.tar.gz" > "$d.tar.gz.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: odr-${{ matrix.target }}
+          path: |
+            odr-*.zip
+            odr-*.zip.sha256
+            odr-*.tar.gz
+            odr-*.tar.gz.sha256
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Attach to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ls -la dist
+          gh release create "${{ github.ref_name }}" dist/* \
+            --repo "${{ github.repository }}" \
+            --title "ODR ${{ github.ref_name }}" \
+            --notes "Built by CI from $GITHUB_SHA. Verify: sha256sum -c *.sha256. See TRIAL_KIT_ar.md inside the archive." \
+            || gh release upload "${{ github.ref_name }}" dist/* --repo "${{ github.repository }}" --clobber

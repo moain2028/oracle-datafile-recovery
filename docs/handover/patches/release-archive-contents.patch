@@ -1,0 +1,26 @@
+--- a/.github/workflows/release.yml
++++ b/.github/workflows/release.yml
+@@ -48,8 +48,9 @@
+           New-Item -ItemType Directory -Force $d | Out-Null
+           Copy-Item target/${{ matrix.target }}/release/odr.exe $d/
+           Copy-Item target/${{ matrix.target }}/release/odr-corrupt.exe $d/
+-          Copy-Item README.md, LICENSE, CHANGELOG.md $d/
+-          Copy-Item docs/field/TRIAL_KIT_ar.md $d/ -ErrorAction SilentlyContinue
++          Copy-Item LICENSE $d/
++          Copy-Item docs/field/README_TRIAL.md $d/README.md
++          Copy-Item docs/field/QUICKSTART_ar.md, docs/field/TRIAL_KIT_ar.md, docs/field/try_odr.ps1, docs/field/try_odr.sh $d/
+           Compress-Archive -Path $d -DestinationPath "$d.zip"
+           (Get-FileHash "$d.zip" -Algorithm SHA256).Hash.ToLower() + "  $d.zip" | Out-File -Encoding ascii "$d.zip.sha256"
+       - name: Package (Linux)
+@@ -59,8 +60,9 @@
+           d="odr-$v-${{ matrix.target }}"
+           mkdir -p "$d"
+           cp target/${{ matrix.target }}/release/odr target/${{ matrix.target }}/release/odr-corrupt "$d/"
+-          cp README.md LICENSE CHANGELOG.md "$d/"
+-          cp docs/field/TRIAL_KIT_ar.md "$d/" 2>/dev/null || true
++          cp LICENSE "$d/"
++          cp docs/field/README_TRIAL.md "$d/README.md"
++          cp docs/field/QUICKSTART_ar.md docs/field/TRIAL_KIT_ar.md docs/field/try_odr.ps1 docs/field/try_odr.sh "$d/"
+           tar -czf "$d.tar.gz" "$d"
+           sha256sum "$d.tar.gz" > "$d.tar.gz.sha256"
+       - uses: actions/upload-artifact@v4

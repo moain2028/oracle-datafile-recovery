@@ -59,7 +59,7 @@ Do not start feature work on a red baseline.
 2. ~~Compression (M5 part 3)~~ ✅ done 2026-10-24 (LV-071, PR #38): T_COMPRESS 2000/2000. Old text: LOBs are done (inline LV-068 #34, out-of-line LV-070 #35). Compressed tables are refused (LV-069). Remaining: decode the 9ir2 symbol table. Start from the measured bytes in `2026-10-24_session_handover.md` §4 (block 5124 of golden v2 `odr_odr_assm01.dbf`: 12-byte extension after kdbh, kdbt at kd+26, tab0 = 46 symbols, tab1 = 692 rows, data row `2c 00 02 16 2d` = two symbol references). Acceptance: **2000/2000 T_COMPRESS values byte-identical to `rows.psv`** across blocks 5124–5126, red/green test citing a new LV row, otherwise the explicit refusal stays. Golden v2 = `golden-26ai-20261024` (`ODR_GOLDEN_V2` for golden_cli).
 3. ~~Extend `odr scavenge` type candidates~~ ✅ done 2026-10-24 (LV-072, PR #40): TSTZ/INTERVAL/LOB added, NTEXT and BINARY_* rejected by measurement, 0 wrong on 26ai/11g/21c.
 4. Anything the owner reports from the Windows trial (`docs/field/QUICKSTART_ar.md` → `TRIAL_KIT_ar.md`, Release `v0.2.0-alpha`).
-5. Owner-only (agent token lacks `workflows` scope): add `docs/field/QUICKSTART_ar.md` to the two copy lines in `.github/workflows/release.yml`.
+5. Owner-only (agent token lacks `workflows` scope): apply `docs/handover/patches/release-archive-contents.patch` (ships evaluator files only, ADR-0007), then tag `v0.3.0-alpha`.
 
 ## Workflow (every change, no exceptions)
 branch `lead/<feature>` → inspect the real bytes first → smallest fix → test that **fails without the fix**

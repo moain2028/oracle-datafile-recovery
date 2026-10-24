@@ -155,7 +155,7 @@ Check ($rej.Count -eq 1 -and $rej[0].ID -eq "6" -and $rej[0]._reason -match 'LOB
     "only row 6 rejected, reason: $($rej[0]._reason)"
 
 # ---------------------------------------------------------------- 6. explicit refusal
-Step "6. Compressed table is refused, not guessed"
+Step "6. Compressed table (v0.2.0-alpha: refused, not guessed; LV-071 builds decode it)"
 $c = & $Odr extract $S $A --table ODR.T_COMPRESS --out out/compress 2>&1
 Check ($LASTEXITCODE -eq 1) "T_COMPRESS exit code $LASTEXITCODE (expected 1)"
 Check (("$c" -match 'compressed') -and ("$c" -match 'LV-069')) "message names compression and LV-069"

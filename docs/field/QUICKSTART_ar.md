@@ -94,15 +94,14 @@ Compare-Object (Get-Content out\journal\verified.csv) (Get-Content out\bitrot\ve
 
 رموز الخروج: `0` كل شيء verified/inferred · `2` يوجد مرفوض · `1` رُفض الطلب كله (مثلاً جدول مضغوط).
 
-## 4. ما ترفضه الأداة اليوم صراحةً (جرّبه لترى الرفض لا التخمين)
+## 4. جدول مضغوط (COMPRESS BASIC) — يُفك من جدول الرموز
 
 ```powershell
 .\odr.exe extract $S $G\odr_odr_assm01.dbf --table ODR.T_COMPRESS --out out\compress
-#   تتوقع رمز خروج 1 و:
-#   ODR.T_COMPRESS: 3 data block(s) are BASIC/OLTP compressed (kdbh flag 0x40) — table compression is not supported yet (M5); refusing rather than guessing (LV-069)
+#   تتوقع: verified 2000 · inferred 0 · rejected 0   ورمز خروج 0  (الإصدار v0.2.0-alpha يرفضه؛ ما بعده يفكّه — LV-071)
 ```
 
-كذلك: TDE (يحتاج wallet)، Hash cluster/IOT، وتزوير قيمة داخل كتلة مع checksum صحيح (حدّ معلَن، يحتاج فهارس — M6). بلا ملف SYSTEM استخدم `odr scavenge` (كل شيء يخرج inferred، لا verified).
+ما ترفضه الأداة صراحةً (لا تخمّن): صيغ ضغط غير BASIC المقاسة (OLTP/HCC)، TDE (يحتاج wallet)، Hash cluster/IOT، وتزوير قيمة داخل كتلة مع checksum صحيح (حدّ معلَن، يحتاج فهارس — M6). بلا ملف SYSTEM استخدم `odr scavenge` (كل شيء يخرج inferred، لا verified).
 
 ## 5. ما نرجوه منك
 

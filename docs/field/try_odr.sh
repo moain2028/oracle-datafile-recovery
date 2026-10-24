@@ -86,7 +86,7 @@ run_extract out/lobchunk "$S" dmg/lobchunk.dbf --table ODR.T_LOB_BASIC; expect 5
 n=$(wc -l < out/lobchunk/rejected.csv); reason=$(grep -o 'column 2: LOB out of line could not be assembled: Integrity { rdba: 67112799, status: ChecksumFail } (LV-070)' out/lobchunk/rejected.csv | wc -l)
 check "$([ "$n" = 2 ] && [ "$reason" = 1 ] && grep -q '^16,[0-9]*,[0-9]*,6,' out/lobchunk/rejected.csv; echo $?)" "only row 6 rejected, reason cites ChecksumFail on rdba 67112799 (LV-070)"
 
-step "6. Compressed table is refused, not guessed"
+step "6. Compressed table (v0.2.0-alpha: refused, not guessed; LV-071 builds decode it)"
 msg=$("$ODR" extract "$S" "$A" --table ODR.T_COMPRESS --out out/compress 2>&1); code=$?
 check "$([ $code = 1 ]; echo $?)" "T_COMPRESS exit code $code (expected 1)"
 check "$(printf '%s' "$msg" | grep -q compressed && printf '%s' "$msg" | grep -q LV-069; echo $?)" "message names compression and LV-069"

@@ -20,8 +20,10 @@
 //! `kdbhflag` bits that change how the block must be read are in
 //! [`kdbh_flag`]. Compressed blocks (basic / OLTP, bit `0x40`) insert extra
 //! `9ir2` header fields before `kdbt` and store rows as symbol-table
-//! references; they are reported as [`DecodeError::Unsupported`] — decoding
-//! them as plain rows would produce wrong values.
+//! references; [`DataBlock::parse`] reports them as
+//! [`DecodeError::Unsupported`] (decoding them as plain rows would produce
+//! wrong values) and the caller hands them to
+//! [`super::compressed::CompressedBlock`] (LV-071).
 //!
 //! **Where `kdbh` starts** differs between freelist (MSSM) blocks — right after
 //! the ITL array — and ASSM blocks, which have 8 more bytes first. Instead of
@@ -160,6 +162,18 @@ pub enum StructuralFault {
         /// Row length.
         len: usize,
     },
+    /// In a BASIC-compressed block a symbol's stored reference count does
+    /// not equal the number of references to it from rows and other symbols
+    /// (LV-071: equal on every symbol of every healthy block measured). A
+    /// forged reference byte moves one count down and another up.
+    SymbolRefCount {
+        /// Symbol index in `kdbt[0]`.
+        symbol: u16,
+        /// Count byte stored in the symbol header.
+        declared: u8,
+        /// References actually found.
+        referenced: usize,
+    },
     /// `avsp` claims more free space than the rows leave (`kdbchk` 6110).
     AvailableSpace {
         /// `kdbhavsp`.
@@ -207,6 +221,14 @@ impl std::fmt::Display for StructuralFault {
             Self::AvailableSpace { avsp, max } => {
                 write!(f, "avsp {avsp} exceeds the space the rows leave ({max})")
             }
+            Self::SymbolRefCount {
+                symbol,
+                declared,
+                referenced,
+            } => write!(
+                f,
+                "compressed symbol {symbol} declares {declared} references but {referenced} point at it"
+            ),
         }
     }
 }
@@ -594,9 +616,13 @@ impl<'a> DataBlock<'a> {
 }
 
 impl Kdbh {
-    /// Parse `kdbh` at `off` and check every invariant against the block.
-    fn parse_checked(block: &[u8], order: ByteOrder, off: usize) -> DecodeResult<Self> {
-        let h = Self {
+    /// Read the 14 header fields at `off` without checking any invariant
+    /// (the compressed-block parser applies its own, LV-071).
+    ///
+    /// # Errors
+    /// [`DecodeError::Truncated`] only.
+    pub fn read_raw(block: &[u8], order: ByteOrder, off: usize) -> DecodeResult<Self> {
+        Ok(Self {
             flag: read_u8(block, off)?,
             ntab: read_u8(block, off + 1)?,
             nrow: read_u16(block, off + 2, order)?,
@@ -605,7 +631,12 @@ impl Kdbh {
             fseo: read_u16(block, off + 8, order)?,
             avsp: read_u16(block, off + 10, order)?,
             tosp: read_u16(block, off + 12, order)?,
-        };
+        })
+    }
+
+    /// Parse `kdbh` at `off` and check every invariant against the block.
+    fn parse_checked(block: &[u8], order: ByteOrder, off: usize) -> DecodeResult<Self> {
+        let h = Self::read_raw(block, order, off)?;
         let space = block.len().saturating_sub(TAIL_LEN).saturating_sub(off);
         let dir_end = KDBH_LEN + 4 * usize::from(h.ntab) + 2 * usize::from(h.nrow);
         let bad = |reason| Err(DecodeError::malformed(WHAT, off, reason));

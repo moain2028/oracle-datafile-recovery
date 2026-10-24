@@ -1,7 +1,22 @@
 # ODR — جرّبها في 10 دقائق (Windows)
 
-> صفحة واحدة. ثلاثة أوامر. كل رقم هنا مقاس فعلاً على الملفات المذكورة (26ai، مجموعة `golden-26ai-20261024`).
+> صفحة واحدة. أمر واحد يكفي (أو ثلاثة باليد). كل رقم هنا مقاس فعلاً على الملفات المذكورة (26ai، مجموعة `golden-26ai-20261024`).
 > الأداة **لا تكتب أبداً** على ملف المصدر. العُدّة الكاملة في `TRIAL_KIT_ar.md`.
+
+## الأسرع: أمر واحد يفعل كل شيء ويحكم بنفسه
+
+سكربت واحد ينزّل الأداة وملفات التجربة، يتحقق من SHA-256، ينفّذ كل الأوامر أدناه، **ويقارن كل رقم بالمتوقع ويطبع PASS/FAIL** (32 فحصاً). لا يلمس ملفات المصدر ويثبت ذلك بـ SHA-256 قبل/بعد.
+
+```powershell
+# Windows (PowerShell 5.1 أو 7) — حمّل try_odr.ps1 من المستودع (docs/field/) ثم:
+powershell -ExecutionPolicy Bypass -File try_odr.ps1 -Dir C:\odr-trial
+```
+```bash
+# Linux
+bash try_odr.sh ~/odr-trial
+```
+
+النتيجة المتوقعة في السطر الأخير: `RESULT: 32 passed, 0 failed` (قُست بالنسخة المنشورة `v0.2.0-alpha`). أي FAIL = أرسل لنا المخرجات كاملة. الأقسام التالية تشرح ما يفعله السكربت خطوة خطوة لمن يريد أن يكتب الأوامر بيده.
 
 ## 0. حمّل (مرة واحدة)
 
@@ -79,15 +94,14 @@ Compare-Object (Get-Content out\journal\verified.csv) (Get-Content out\bitrot\ve
 
 رموز الخروج: `0` كل شيء verified/inferred · `2` يوجد مرفوض · `1` رُفض الطلب كله (مثلاً جدول مضغوط).
 
-## 4. ما ترفضه الأداة اليوم صراحةً (جرّبه لترى الرفض لا التخمين)
+## 4. جدول مضغوط (COMPRESS BASIC) — يُفك من جدول الرموز
 
 ```powershell
 .\odr.exe extract $S $G\odr_odr_assm01.dbf --table ODR.T_COMPRESS --out out\compress
-#   تتوقع رمز خروج 1 و:
-#   ODR.T_COMPRESS: 3 data block(s) are BASIC/OLTP compressed (kdbh flag 0x40) — table compression is not supported yet (M5); refusing rather than guessing (LV-069)
+#   تتوقع: verified 2000 · inferred 0 · rejected 0   ورمز خروج 0  (الإصدار v0.2.0-alpha يرفضه؛ ما بعده يفكّه — LV-071)
 ```
 
-كذلك: TDE (يحتاج wallet)، Hash cluster/IOT، وتزوير قيمة داخل كتلة مع checksum صحيح (حدّ معلَن، يحتاج فهارس — M6). بلا ملف SYSTEM استخدم `odr scavenge` (كل شيء يخرج inferred، لا verified).
+ما ترفضه الأداة صراحةً (لا تخمّن): صيغ ضغط غير BASIC المقاسة (OLTP/HCC)، TDE (يحتاج wallet)، Hash cluster/IOT، وتزوير قيمة داخل كتلة مع checksum صحيح (حدّ معلَن، يحتاج فهارس — M6). بلا ملف SYSTEM استخدم `odr scavenge` (كل شيء يخرج inferred، لا verified).
 
 ## 5. ما نرجوه منك
 

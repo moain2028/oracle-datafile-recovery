@@ -1,6 +1,9 @@
 # Changelog
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 ## [Unreleased]
+### Added
+- **M5 part 3 — BASIC compression decoded (LV-071)**: `row/compressed.rs::CompressedBlock` parses the 9ir2 header (`mec`, `ncols`, `flag_9ir2` 0x23, `perm`), the symbol table (`kdbt[0]`) and expands each row's symbol references / inline literals recursively, re-ordering by `perm`. Grammar derived from the real block bytes and verified against Oracle's own block dump (`bindmp` vs `col`) and `rows.psv`: **2,000/2,000 rows, 6,000/6,000 values byte-identical**. `odr extract ODR.T_COMPRESS`: verified 2000 · 0 · 0, exit 0 (was refused, LV-069 — the refusal remains for compressed layouts that are not the measured BASIC one). New `StructuralFault::SymbolRefCount` (stored refcount ≠ references) rejects a forged block whole; `RawRow.compressed`, `SegmentRows.compressed_blocks`, `report.json.compressed_blocks`. Red/green ×3; bitrot ×5 seeds 0 wrong; **declared limit**: forge inside a literal (checksum recomputed) is not detectable from the block alone — 7 wrong-verified rows over 10 forge seeds, same class as LV-064. golden_lab 12/12 (all 147,661 v2 values now compared, 18 tables), golden_cli 10/10, 117 tests, fuzz `read_heap` 744K clean.
+- **Self-checking trial scripts** `docs/field/try_odr.ps1` (Windows, PowerShell 5.1/7) and `try_odr.sh` (Linux): download tool + golden v2, verify SHA-256, run dict/extract/LOB/damage/compressed-refusal, assert every expected number (32 checks incl. "0 verified rows in the damaged output that are absent from the clean output" and "source sha256 unchanged"), print PASS/FAIL, exit 0/1. Measured: ps1 32/32 (pwsh 7.4 on Linux against the release build; `$args` is a reserved variable — parameter renamed), sh 33/33 through the real `v0.2.0-alpha` download path; both idempotent on re-run; a tampered expectation turns red.
 
 ## [0.2.0-alpha] - 2026-10-24
 ### Added

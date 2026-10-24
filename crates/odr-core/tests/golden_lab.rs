@@ -542,33 +542,18 @@ fn lab_row_readers_match_oracle_rowids() {
         };
         let got = read_heap(&src, &seg, file, dataobj);
         if name == "T_COMPRESS" {
-            // LV-069: every data block of a BASIC-compressed table is refused
-            // as `Unsupported("compressed …")` — no row is ever produced, so
-            // no symbol reference can be printed as a value.
+            // LV-071: a BASIC-compressed segment is decoded through the
+            // symbol table; every one of its 3 blocks must be read as
+            // compressed (never refused, never as plain rows) and yield
+            // exactly the ROWID set Oracle reports.
             assert!(
-                got.rows.is_empty(),
-                "{name}: compressed rows must not decode"
-            );
-            let refused = got
-                .skipped
-                .iter()
-                .filter(|(_, s)| matches!(s, odr_core::dict::rows::Skip::Malformed(odr_core::DecodeError::Unsupported(m)) if m.contains("compressed")))
-                .count();
-            assert!(
-                refused >= 1,
-                "{name}: expected compressed blocks refused, skipped {:?}",
+                got.skipped
+                    .iter()
+                    .all(|(_, s)| !matches!(s, odr_core::dict::rows::Skip::Malformed(_))),
+                "{name}: compressed blocks must decode, skipped {:?}",
                 got.skipped
             );
-            assert!(
-                got.skipped.iter().all(|(_, s)| !matches!(
-                    s,
-                    odr_core::dict::rows::Skip::Malformed(odr_core::DecodeError::Malformed { .. })
-                )),
-                "{name}: a compressed block must be refused as Unsupported, never as malformed: {:?}",
-                got.skipped
-            );
-            checked += 1;
-            continue;
+            assert_eq!(got.data_blocks, 3, "{name}: three compressed data blocks");
         }
         let errs: Vec<_> = got.rows.iter().filter_map(|r| r.as_ref().err()).collect();
         assert!(errs.is_empty(), "{name}: {errs:?}");
@@ -950,6 +935,7 @@ fn lab_values_match_oracle_dump_byte_for_byte() {
     let mut lob_checked = 0usize;
     let mut lob_out_of_line = 0usize;
     let mut lob_segment_read = 0usize;
+    let mut compressed_rows = 0usize;
     let segs = std::fs::read_to_string(g.join("meta/segments.txt")).unwrap();
     let mut values_checked = 0usize;
     let mut canonical_checked = 0usize;
@@ -973,8 +959,8 @@ fn lab_values_match_oracle_dump_byte_for_byte() {
             p[6].parse().unwrap(),
         );
         match p[3] {
-            // T_COMPRESS is refused whole (LV-069, checked in the rowid test).
-            "TABLE" if p[0] == "T_COMPRESS" => {}
+            // T_COMPRESS is decoded through its symbol table (LV-071) and
+            // compared like any other heap table.
             "TABLE" => work.push((p[0].to_owned(), dataobj, file, hb, None)),
             "CLUSTER" if seen_cluster.insert(p[0].to_owned()) => {
                 for (tname, tab) in [("T_CL_DEPT", 1usize), ("T_CL_EMP", 2)] {
@@ -1026,6 +1012,9 @@ fn lab_values_match_oracle_dump_byte_for_byte() {
                 .unwrap_or_else(|| panic!("{name}: no rowid for {key:?}"));
             let want = truth.get(&(name.to_owned(), rid.clone())).unwrap();
             rows_seen += 1;
+            if r.compressed {
+                compressed_rows += 1;
+            }
             for (i, (segcol, cname, dtype)) in tcols.iter().enumerate() {
                 assert_eq!(
                     usize::try_from(*segcol).unwrap(),
@@ -1360,14 +1349,18 @@ fn lab_values_match_oracle_dump_byte_for_byte() {
     // Step g closed: every truth value compared — T_ADDCOL's fast-added NN/NL
     // (12 values) are checked through `materialize` above rather than as
     // stored bytes, so they are added back here to reach the exact total.
-    // Golden v2: T_COMPRESS (6,000 values) is refused whole (LV-069) and
-    // counted in the rowid test instead.
+    // Golden v2: T_COMPRESS (6,000 values) is decoded through the 9ir2
+    // symbol table (LV-071) and compared byte for byte like every other table.
     if v2 {
-        assert_eq!(tables_checked, 17, "tables");
+        assert_eq!(tables_checked, 18, "tables");
         assert_eq!(
-            values_checked + 12 + 6_000,
+            values_checked + 12,
             truth_total,
             "every truth value compared"
+        );
+        assert!(
+            compressed_rows >= 2_000,
+            "T_COMPRESS: 2,000 rows must come from compressed blocks, got {compressed_rows}"
         );
         // 2 tables × 6 rows × 2 LOB columns = 24, minus 3 NULL locators per table.
         assert_eq!(lob_checked, 18, "LOB locators decoded");

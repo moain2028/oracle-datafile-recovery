@@ -509,10 +509,11 @@ pub(crate) fn extract(
         None => read_heap(&set, &seg, hdr_file, seg.objd),
         Some((tab, clucols)) => read_cluster(&set, &seg, hdr_file, seg.objd, tab, clucols),
     };
-    // LV-069: a BASIC/OLTP-compressed segment (`kdbhflag` 0x40, symbol table
-    // in kdbt[0]) is refused as a whole. Decoding its rows as plain rows
-    // would print symbol references as values — the exact wrong value the
-    // golden rule forbids. Nothing is written for such a table.
+    // LV-069/071: BASIC-compressed blocks are decoded through their symbol
+    // table (LV-071). A compressed format the reader does not understand
+    // (OLTP / archive flag bits, length escapes) is still refused as a
+    // whole: decoding its rows as plain rows would print symbol references
+    // as values — the exact wrong value the golden rule forbids.
     let compressed = rows
         .skipped
         .iter()
@@ -522,7 +523,7 @@ pub(crate) fn extract(
         .count();
     if compressed > 0 && rows.rows.is_empty() {
         bail!(
-            "{table}: {compressed} data block(s) are BASIC/OLTP compressed (kdbh flag 0x40) — table compression is not supported yet (M5); refusing rather than guessing (LV-069)"
+            "{table}: {compressed} data block(s) use a compressed format this reader does not decode (kdbh flag 0x40, not the measured BASIC 9ir2 layout) — refusing rather than guessing (LV-069)"
         );
     }
 
@@ -726,6 +727,7 @@ pub(crate) fn extract(
         "obj": t.obj, "dataobj": t.dataobj, "tablespace": d.tablespace_name(t.ts),
         "segment": {"file": hdr_file, "block": hdr_block, "blocks": seg.len(), "extents": seg.extents.len(), "issues": seg.issues.iter().map(|i| format!("{i:?}")).collect::<Vec<_>>()},
         "data_blocks": rows.data_blocks,
+        "compressed_blocks": rows.compressed_blocks,
         "rows": {"verified": n_ver, "inferred": n_inf, "rejected": n_rej},
         "skipped_blocks": skipped,
         "columns": visible.iter().map(|c| c.name.clone()).collect::<Vec<_>>(),

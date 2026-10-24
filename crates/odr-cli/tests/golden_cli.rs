@@ -356,30 +356,54 @@ fn lob_locators_of_row6<'a>(
     out
 }
 
-/// LV-069 — a BASIC-compressed table is refused as a whole (exit 1, no
-/// output files): its rows are symbol references, and printing them as
-/// values would be the wrong value the golden rule forbids. Golden v2 only.
+/// LV-071 — a BASIC-compressed table is decoded through its 9ir2 symbol
+/// table: 2,000/2,000 rows verified, canonical text identical to Oracle's
+/// `rows.psv`, exit 0, `compressed_blocks` reported.
 #[test]
-fn extract_refuses_compressed_table_explicitly() {
-    let Some(g) = golden_v2() else { return };
+fn extract_decodes_basic_compressed_table_exactly() {
+    let Some(golden) = golden_v2() else { return };
     let out_dir = std::env::temp_dir().join(format!("odr_cli_compress_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&out_dir);
     let out = Command::new(env!("CARGO_BIN_EXE_odr"))
         .arg("extract")
-        .args(files(&g))
+        .arg(golden.join("datafiles/FREE_FREEPDB1_system01.dbf"))
+        .arg(golden.join("datafiles/odr_odr_assm01.dbf"))
         .args(["--table", "ODR.T_COMPRESS", "--out"])
         .arg(&out_dir)
         .output()
         .unwrap();
-    let err = String::from_utf8_lossy(&out.stderr);
-    assert_eq!(out.status.code(), Some(1), "{err}");
-    assert!(
-        err.contains("compressed") && err.contains("LV-069"),
-        "{err}"
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
     );
-    assert!(
-        !out_dir.join("verified.csv").exists(),
-        "no output for a refused table"
-    );
+    let verified = std::fs::read_to_string(out_dir.join("verified.csv")).unwrap();
+    let lines: Vec<&str> = verified.lines().collect();
+    assert_eq!(lines.len(), 2_001, "2,000 rows + header");
+    // Truth: rows.psv canonical column (field 8) per (ID, column).
+    let mut truth = std::collections::HashMap::new();
+    for line in std::fs::read_to_string(golden.join("rows.psv"))
+        .unwrap()
+        .lines()
+    {
+        let parts: Vec<&str> = line.split('|').collect();
+        if parts.first() == Some(&"T_COMPRESS") {
+            truth.insert(
+                (parts[1].to_owned(), parts[2].to_owned()),
+                parts[7].to_owned(),
+            );
+        }
+    }
+    for row in &lines[1..] {
+        let fields: Vec<&str> = row.split(',').collect();
+        let (id, val, num) = (fields[3], fields[4], fields[5]);
+        assert_eq!(truth[&(id.to_owned(), "ID".to_owned())], id);
+        assert_eq!(truth[&(id.to_owned(), "V".to_owned())], val, "row {id}");
+        assert_eq!(truth[&(id.to_owned(), "N".to_owned())], num, "row {id}");
+    }
+    let report = std::fs::read_to_string(out_dir.join("report.json")).unwrap();
+    assert!(report.contains("\"compressed_blocks\": 3"), "{report}");
     let _ = std::fs::remove_dir_all(&out_dir);
 }
 

@@ -68,6 +68,9 @@ pub struct RawRow {
     /// Lets a caller reason about *where* in a damaged block the row sits
     /// (LV-065 torn blocks: rows wholly below the damage frontier).
     pub span: (usize, usize),
+    /// The row was expanded from a BASIC-compressed block's symbol table
+    /// (LV-071). Its bytes are exact, but they were not stored contiguously.
+    pub compressed: bool,
 }
 
 /// Why a row could not be produced.
@@ -100,6 +103,9 @@ pub struct SegmentRows {
     pub skipped: Vec<(BlockAddr, Skip)>,
     /// Data blocks successfully read.
     pub data_blocks: usize,
+    /// Of those, BASIC-compressed blocks decoded through their symbol
+    /// table (LV-071).
+    pub compressed_blocks: usize,
     /// For every `TailMismatch` block (by `rdba`): the lowest block offset
     /// of a slot that is structurally broken — does not decode, is flagged
     /// deleted / continuation / incomplete, is chained, or locks outside
@@ -283,6 +289,17 @@ fn read_impl<S: BlockSource + ?Sized>(
         }
         let db = match DataBlock::parse(&bytes, order) {
             Ok(db) => db,
+            Err(DecodeError::Unsupported(m)) if m.contains("compressed") && cluster.is_none() => {
+                // LV-071: BASIC-compressed block — decode through the symbol
+                // table. Rows are produced only when the block passed
+                // integrity *and* its position check: a compressed row has
+                // no redundancy a damaged byte would break, and one wrong
+                // byte in the symbol table changes many rows.
+                read_compressed(
+                    &bytes, order, &h, scheme, block, status, file, objd, addr, &mut out,
+                );
+                continue;
+            }
             Err(e) => {
                 out.skipped.push((
                     addr,
@@ -480,6 +497,7 @@ fn read_impl<S: BlockSource + ?Sized>(
                             block_status: worst(status, chain_status(&chain, order)),
                             structural,
                             span,
+                            compressed: false,
                             columns: a.columns,
                             pieces: if a.pieces.len() > 1 {
                                 a.pieces
@@ -524,6 +542,7 @@ fn read_impl<S: BlockSource + ?Sized>(
                                 block_status: status,
                                 structural,
                                 span,
+                                compressed: false,
                                 columns: cols.into_iter().map(|c| c.map(<[u8]>::to_vec)).collect(),
                                 pieces: Vec::new(),
                             })),
@@ -542,4 +561,113 @@ fn read_impl<S: BlockSource + ?Sized>(
         }
     }
     out
+}
+
+/// LV-071: read one BASIC-compressed block. `kdbh` is located like
+/// [`DataBlock::parse`] does (MSSM right after the ITLs, ASSM 8 bytes later):
+/// exactly one of the two positions must announce a compressed header.
+#[allow(clippy::too_many_arguments)] // one call site; mirrors the plain-block path
+fn read_compressed(
+    bytes: &[u8],
+    order: ByteOrder,
+    h: &BlockHeader,
+    scheme: crate::block::RdbaScheme,
+    block: u32,
+    status: BlockStatus,
+    file: u32,
+    objd: u32,
+    addr: BlockAddr,
+    out: &mut SegmentRows,
+) {
+    use crate::row::compressed::CompressedBlock;
+    use crate::row::kdb::ASSM_GAP;
+    let trusted = status == BlockStatus::Valid;
+    let Ok(ktb) = crate::row::ktb::Ktbbh::parse(bytes, order) else {
+        out.skipped.push((addr, Skip::Integrity(status)));
+        return;
+    };
+    if ktb.objd != objd {
+        out.skipped.push((addr, Skip::ForeignObject(ktb.objd)));
+        return;
+    }
+    let base = ktb.itl_end();
+    let candidates = [base, base.saturating_add(ASSM_GAP)];
+    let mut found: Option<usize> = None;
+    for off in candidates {
+        if CompressedBlock::looks_compressed(bytes, off) {
+            if found.is_some() {
+                out.skipped.push((
+                    addr,
+                    Skip::Malformed(DecodeError::malformed(
+                        "kdbh9ir2",
+                        off,
+                        "ambiguous MSSM/ASSM layout",
+                    )),
+                ));
+                return;
+            }
+            found = Some(off);
+        }
+    }
+    let Some(kdbh_off) = found else {
+        out.skipped.push((
+            addr,
+            Skip::Malformed(DecodeError::Unsupported("compressed data block (9ir2)")),
+        ));
+        return;
+    };
+    let cb = match CompressedBlock::parse(bytes, order, kdbh_off) {
+        Ok(cb) => cb,
+        Err(e) => {
+            out.skipped.push((
+                addr,
+                if trusted {
+                    Skip::Malformed(e)
+                } else {
+                    Skip::Integrity(status)
+                },
+            ));
+            return;
+        }
+    };
+    let (_, header_block) = h.rdba.split(scheme);
+    let structural = if !trusted {
+        None
+    } else if header_block != block {
+        Some(StructuralFault::Misplaced {
+            header_block,
+            found_at: block,
+        })
+    } else {
+        cb.structural_check()
+    };
+    out.data_blocks = out.data_blocks.saturating_add(1);
+    out.compressed_blocks = out.compressed_blocks.saturating_add(1);
+    let rdba = h.rdba.0;
+    for (slot, r) in cb.rows() {
+        let prov = Provenance {
+            file,
+            rdba,
+            slot,
+            scn: h.scn.0,
+        };
+        match (r, structural) {
+            (Ok(row), None) if trusted => out.rows.push(Ok(RawRow {
+                provenance: prov,
+                rowid_row: slot.saturating_sub(cb.data.first),
+                block_status: status,
+                structural,
+                span: row.span,
+                compressed: true,
+                columns: row.columns.into_iter().map(|c| Some(c.to_vec())).collect(),
+                pieces: Vec::new(),
+            })),
+            // Untrusted block: every slot reported as an integrity failure
+            // (LV-061), never dropped, never verified.
+            (_, _) if !trusted => out.rows.push(Err((prov, RowError::Integrity(status)))),
+            (_, Some(f)) => out.rows.push(Err((prov, RowError::Structural(f)))),
+            (Err(e), None) => out.rows.push(Err((prov, RowError::Decode(e)))),
+            (Ok(_), None) => {}
+        }
+    }
 }

@@ -1232,3 +1232,64 @@ fn scavenge_type_candidates_never_name_a_wrong_type() {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 }
+
+/// LV-073 — `odr scan` takes block size and byte order from the file's own
+/// header (block 1, `kcvfh`) instead of assuming 8 KiB little-endian:
+/// a text file / random bytes / an empty file are refused (exit 1) instead
+/// of being reported as "N damaged blocks"; a real datafile reports
+/// `layout_source = header`; a wiped header needs `--force` and says so.
+#[test]
+fn scan_reads_layout_from_the_header_and_refuses_non_datafiles() {
+    let tmp = std::env::temp_dir().join(format!("odr_cli_scan_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&tmp).unwrap();
+    let text = tmp.join("text.dbf");
+    std::fs::write(&text, "this is not an oracle datafile\n".repeat(400)).unwrap();
+    let empty = tmp.join("empty.dbf");
+    std::fs::write(&empty, b"").unwrap();
+    for f in [&text, &empty] {
+        let out = Command::new(env!("CARGO_BIN_EXE_odr"))
+            .arg("scan")
+            .arg(f)
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(1), "{}", f.display());
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            err.contains("not an Oracle datafile header") && err.contains("--force"),
+            "{err}"
+        );
+    }
+    // Forced: scans anyway and says the layout was forced.
+    let out = Command::new(env!("CARGO_BIN_EXE_odr"))
+        .args(["scan", "--block-size", "8192", "--force", "--json"])
+        .arg(&text)
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["layout_source"], "forced (header unreadable)");
+    if let Some(g) = golden() {
+        let assm = g.join("datafiles/odr_odr_assm01.dbf");
+        let out = Command::new(env!("CARGO_BIN_EXE_odr"))
+            .args(["scan", "--json"])
+            .arg(&assm)
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(0));
+        let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(v["block_size"], 8192);
+        assert_eq!(v["byte_order"], "Little");
+        assert_eq!(v["layout_source"], "header");
+        assert_eq!(v["damaged"], 0);
+        // A block size that disagrees with the header is refused without --force.
+        let out = Command::new(env!("CARGO_BIN_EXE_odr"))
+            .args(["scan", "--block-size", "4096"])
+            .arg(&assm)
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(1));
+        assert!(String::from_utf8_lossy(&out.stderr).contains("header says block size 8192"));
+    }
+    let _ = std::fs::remove_dir_all(&tmp);
+}

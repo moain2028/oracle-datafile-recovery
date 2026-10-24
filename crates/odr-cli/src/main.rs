@@ -34,12 +34,19 @@ enum Cmd {
     Scan {
         /// Path to the datafile.
         file: PathBuf,
-        /// Block size in bytes.
-        #[arg(long, default_value_t = 8192)]
-        block_size: usize,
-        /// Byte order of the source platform.
-        #[arg(long, value_enum, default_value_t = Endian::Little)]
-        endian: Endian,
+        /// Block size in bytes. Default: read from the file header (block 1,
+        /// `kcvfh`); an explicit value that disagrees with the header is
+        /// reported and the header wins unless `--force` is given.
+        #[arg(long)]
+        block_size: Option<usize>,
+        /// Byte order of the source platform. Default: detected from the
+        /// file header; same disagreement rule as `--block-size`.
+        #[arg(long, value_enum)]
+        endian: Option<Endian>,
+        /// Use the given `--block-size`/`--endian` even if block 1 disagrees
+        /// or is unreadable (header destroyed). Recorded in the output.
+        #[arg(long)]
+        force: bool,
         /// Emit JSON instead of text.
         #[arg(long)]
         json: bool,
@@ -109,13 +116,14 @@ fn main() -> ExitCode {
 }
 
 fn run() -> Result<ExitCode> {
-    let (file, block_size, endian, json) = match Cli::parse().cmd {
+    let (file, block_size_arg, endian_arg, force, json) = match Cli::parse().cmd {
         Cmd::Scan {
             file,
             block_size,
             endian,
+            force,
             json,
-        } => (file, block_size, endian, json),
+        } => (file, block_size, endian, force, json),
         Cmd::Dict {
             files,
             json,
@@ -150,28 +158,21 @@ fn run() -> Result<ExitCode> {
             return scavenge_cmd::scavenge(&files, &out, charset.as_deref(), objd, min_rows);
         }
     };
-    if !BLOCK_SIZES.contains(&block_size) {
-        bail!("invalid block size {block_size}; expected one of {BLOCK_SIZES:?}");
+    if let Some(bs) = block_size_arg
+        && !BLOCK_SIZES.contains(&bs)
+    {
+        bail!("invalid block size {bs}; expected one of {BLOCK_SIZES:?}");
     }
-    let order = match endian {
-        Endian::Little => ByteOrder::Little,
-        Endian::Big => ByteOrder::Big,
-    };
     let mut ev = Evidence::open(&file).with_context(|| format!("opening {}", file.display()))?;
     // Reference path: whole-file read. Astra replaces with streamed parallel scan.
     let len = usize::try_from(ev.len()).context("file too large for this build")?;
     let mut img = vec![0u8; len];
     ev.read_at(0, &mut img)?;
+    let (block_size, order, source) =
+        resolve_layout(&file, &img, block_size_arg, endian_arg, force)?;
     let report = scan_image(&img, block_size, order);
     let unchanged = ev.verify_unchanged()?;
-    let sha = ev
-        .sha256()
-        .iter()
-        .fold(String::with_capacity(64), |mut s, b| {
-            use std::fmt::Write as _;
-            let _ = write!(s, "{b:02x}");
-            s
-        });
+    let sha = hex64(ev.sha256());
     let damaged = report
         .blocks
         .len()
@@ -181,7 +182,8 @@ fn run() -> Result<ExitCode> {
     if json {
         let v = serde_json::json!({
             "file": file.display().to_string(), "sha256": sha, "unchanged": unchanged,
-            "block_size": block_size, "blocks": report.blocks.len(),
+            "block_size": block_size, "byte_order": format!("{order:?}"), "layout_source": source,
+            "blocks": report.blocks.len(),
             "valid": report.count(BlockStatus::Valid), "zeroed": report.count(BlockStatus::Zeroed),
             "damaged": damaged,
         });
@@ -189,6 +191,7 @@ fn run() -> Result<ExitCode> {
     } else {
         println!("file      {}", file.display());
         println!("sha256    {sha}  (unchanged after scan: {unchanged})");
+        println!("layout    block size {block_size} · {order:?} ({source})");
         println!("blocks    {}", report.blocks.len());
         for s in [
             BlockStatus::Valid,
@@ -209,4 +212,81 @@ fn run() -> Result<ExitCode> {
     } else {
         ExitCode::SUCCESS
     })
+}
+
+/// Lower-case hex of a digest.
+fn hex64(bytes: &[u8]) -> String {
+    bytes.iter().fold(String::with_capacity(64), |mut s, b| {
+        use std::fmt::Write as _;
+        let _ = write!(s, "{b:02x}");
+        s
+    })
+}
+
+/// Block size / byte order for `odr scan`: from the file's own header
+/// (block 1, `kcvfh`), tried at every legal block size in both byte orders
+/// — exactly one must parse and name its own size. Scanning with a wrong
+/// size classifies every block as damaged: a wrong report, not a missing
+/// one. Command-line values that disagree with the header are refused
+/// unless `--force`; with an unreadable header `--force` is required.
+/// Returns `(block_size, order, "header" | "forced" | …)`.
+fn resolve_layout(
+    file: &std::path::Path,
+    img: &[u8],
+    block_size_arg: Option<usize>,
+    endian_arg: Option<Endian>,
+    force: bool,
+) -> Result<(usize, ByteOrder, &'static str)> {
+    let to_order = |e: Endian| match e {
+        Endian::Little => ByteOrder::Little,
+        Endian::Big => ByteOrder::Big,
+    };
+    match (detect_header(img), block_size_arg, endian_arg) {
+        (Some((hbs, ho)), bs, en) => {
+            let bs = bs.unwrap_or(hbs);
+            let o = en.map_or(ho, to_order);
+            if (bs, o) == (hbs, ho) {
+                Ok((bs, o, "header"))
+            } else if force {
+                Ok((bs, o, "forced"))
+            } else {
+                bail!(
+                    "{}: header says block size {hbs} / {ho:?} but the command line says {bs} / {o:?}; pass --force to override the header",
+                    file.display()
+                )
+            }
+        }
+        (None, Some(bs), en) if force => Ok((
+            bs,
+            to_order(en.unwrap_or(Endian::Little)),
+            "forced (header unreadable)",
+        )),
+        (None, _, _) => bail!(
+            "{}: block 1 is not an Oracle datafile header in any block size / byte order; pass --block-size and --endian with --force to scan anyway",
+            file.display()
+        ),
+    }
+}
+
+/// Find the datafile header in block 1: for every legal block size, in both
+/// byte orders, `kcvfh` must parse **and** declare that same block size.
+/// Returns `None` unless exactly one `(size, order)` qualifies.
+fn detect_header(img: &[u8]) -> Option<(usize, ByteOrder)> {
+    let mut found = None;
+    for bs in BLOCK_SIZES {
+        let Some(block) = img.get(bs..bs.saturating_mul(2)) else {
+            continue;
+        };
+        for order in [ByteOrder::Little, ByteOrder::Big] {
+            if let Ok(h) = odr_core::dict::kcvfh::FileHeader::parse(block, order)
+                && usize::try_from(h.block_size).ok() == Some(bs)
+            {
+                if found.is_some() {
+                    return None;
+                }
+                found = Some((bs, order));
+            }
+        }
+    }
+    found
 }

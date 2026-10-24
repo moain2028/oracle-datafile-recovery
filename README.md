@@ -29,7 +29,7 @@ Download `odr-<ver>-x86_64-pc-windows-msvc.zip` or the Linux tarball from **Rele
 | `LESSONS.md` `CHANGELOG.md` `CONTRIBUTING.md` `SECURITY.md` | الدروس، السجل، المساهمة، الأمان وبيانات العملاء |
 | `crates/odr-corrupt/` | Deterministic, manifest-backed damage for **copies** of datafiles (10 patterns) — used by the golden precision tests |
 | `lab/` | Oracle 26ai Free lab: corpus SQL, golden export, `odr-corrupt` recipes (`lab/out/` is never committed) |
-| `fuzz/` | 11 cargo-fuzz targets (nightly); CI runs a smoke pass |
+| `fuzz/` | 12 cargo-fuzz targets (nightly); CI runs a smoke pass |
 
 ## Status (2026-10-18, after PR #21)
 
@@ -39,7 +39,7 @@ ODR reads **real Oracle 26ai datafiles end-to-end** with no instance: `odr dict`
 
 ```
 cargo build --release -p odr-cli
-odr scan USERS01.DBF --json                              # classify every block (read-only; SHA-256 before/after)
+odr scan USERS01.DBF --json                              # classify every block (read-only; SHA-256 before/after; block size + byte order from the header)
 odr dict SYSTEM01.DBF USERS01.DBF [--json]               # dictionary: tables, columns, NLS charset, issues
 odr extract SYSTEM01.DBF USERS01.DBF --table HR.EMP --out out/   # verified / inferred / rejected + report.json
 odr extract SYSTEM01.DBF DAMAGED.DBF --table HR.EMP --out out/ \

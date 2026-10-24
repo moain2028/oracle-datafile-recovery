@@ -541,6 +541,35 @@ fn lab_row_readers_match_oracle_rowids() {
             continue;
         };
         let got = read_heap(&src, &seg, file, dataobj);
+        if name == "T_COMPRESS" {
+            // LV-069: every data block of a BASIC-compressed table is refused
+            // as `Unsupported("compressed …")` — no row is ever produced, so
+            // no symbol reference can be printed as a value.
+            assert!(
+                got.rows.is_empty(),
+                "{name}: compressed rows must not decode"
+            );
+            let refused = got
+                .skipped
+                .iter()
+                .filter(|(_, s)| matches!(s, odr_core::dict::rows::Skip::Malformed(odr_core::DecodeError::Unsupported(m)) if m.contains("compressed")))
+                .count();
+            assert!(
+                refused >= 1,
+                "{name}: expected compressed blocks refused, skipped {:?}",
+                got.skipped
+            );
+            assert!(
+                got.skipped.iter().all(|(_, s)| !matches!(
+                    s,
+                    odr_core::dict::rows::Skip::Malformed(odr_core::DecodeError::Malformed { .. })
+                )),
+                "{name}: a compressed block must be refused as Unsupported, never as malformed: {:?}",
+                got.skipped
+            );
+            checked += 1;
+            continue;
+        }
         let errs: Vec<_> = got.rows.iter().filter_map(|r| r.as_ref().err()).collect();
         assert!(errs.is_empty(), "{name}: {errs:?}");
         let ok: BTreeSet<(u32, u32, u16)> = got
@@ -631,7 +660,17 @@ fn lab_torn_block_accounts_for_every_slot() {
             )
         })
         .sum();
-    assert_eq!(nrow, 142 + 137, "26ai lab: slots of blocks 3227 + 3311");
+    // Exact slot counts of the 2026-10-18 lab run; later runs of the same
+    // corpus place T_JOURNAL rows slightly differently (different SCNs and
+    // free-space decisions), so only the v1 set pins the two numbers.
+    let v1 = std::fs::read_to_string(g.join("meta/segments.txt"))
+        .unwrap()
+        .contains("T_JOURNAL|72551|");
+    if v1 {
+        assert_eq!(nrow, 142 + 137, "26ai lab: slots of blocks 3227 + 3311");
+    } else {
+        assert!(nrow > 200, "two full T_JOURNAL blocks: {nrow} slots");
+    }
 
     // Control: clean blocks → every slot Ok and Valid.
     let mut src = ImageSet::new(ByteOrder::Little);
@@ -790,7 +829,7 @@ fn lab_values_match_oracle_dump_byte_for_byte() {
     use odr_core::dict::rows::{read_cluster, read_heap};
     use odr_core::dict::schema::{Cell, ColumnDef, TableDef, materialize};
     use odr_core::dict::source::{BlockSource, FileInfo, ImageSet};
-    use odr_core::value::{Charsets, ColumnType, decode_value};
+    use odr_core::value::{Charsets, ColumnType, Value, decode_value};
     use std::collections::{BTreeMap, HashMap};
     let Some(g) = golden() else { return };
     let mut src = ImageSet::new(ByteOrder::Little);
@@ -899,8 +938,17 @@ fn lab_values_match_oracle_dump_byte_for_byte() {
     }
 
     // Total number of truth values: every (table, rowid, column) line.
+    // Golden v1 (20261018, 15 tables) has 141,613; golden v2 (2026-10-24,
+    // + T_LOB_BASIC/T_LOB_SECURE/T_COMPRESS) has 147,661.
     let truth_total: usize = truth.values().map(HashMap::len).sum();
-    assert_eq!(truth_total, 141_613, "rows.psv lines");
+    let v2 = truth.keys().any(|(t, _)| t == "T_LOB_BASIC");
+    assert_eq!(
+        truth_total,
+        if v2 { 147_661 } else { 141_613 },
+        "rows.psv lines"
+    );
+    let mut lob_checked = 0usize;
+    let mut lob_out_of_line = 0usize;
     let segs = std::fs::read_to_string(g.join("meta/segments.txt")).unwrap();
     let mut values_checked = 0usize;
     let mut canonical_checked = 0usize;
@@ -924,6 +972,8 @@ fn lab_values_match_oracle_dump_byte_for_byte() {
             p[6].parse().unwrap(),
         );
         match p[3] {
+            // T_COMPRESS is refused whole (LV-069, checked in the rowid test).
+            "TABLE" if p[0] == "T_COMPRESS" => {}
             "TABLE" => work.push((p[0].to_owned(), dataobj, file, hb, None)),
             "CLUSTER" if seen_cluster.insert(p[0].to_owned()) => {
                 for (tname, tab) in [("T_CL_DEPT", 1usize), ("T_CL_EMP", 2)] {
@@ -992,6 +1042,82 @@ fn lab_values_match_oracle_dump_byte_for_byte() {
                 };
                 if name == "T_ADDCOL" && (cname == "NN" || cname == "NL") {
                     continue; // fast-added: checked through `materialize` below
+                }
+                if dtype == "CLOB" || dtype == "BLOB" {
+                    // LV-068: DUMP() refuses LOBs, so the truth carries no
+                    // stored bytes — only `Typ=112/113 Len=<chars|bytes>` and
+                    // `len=N:<data>`; the stored locator is decoded here and
+                    // its inline data compared with DBMS_LOB.SUBSTR.
+                    let (len_txt, data_txt) = want_text
+                        .strip_prefix("len=")
+                        .and_then(|t| t.split_once(':'))
+                        .unwrap_or_else(|| panic!("{name}.{cname} rowid {rid}: truth {want_text}"));
+                    match got_bytes {
+                        None => assert!(
+                            len_txt.is_empty(),
+                            "{name}.{cname} rowid {rid}: Oracle has a LOB, ODR NULL"
+                        ),
+                        Some(raw) => {
+                            let want_len: usize = len_txt.parse().unwrap();
+                            let ty = if dtype == "CLOB" {
+                                ColumnType::Clob { national: false }
+                            } else {
+                                ColumnType::Blob
+                            };
+                            let v = decode_value(Some(raw), ty, cs);
+                            let loc = odr_core::types::LobLocator::parse(raw).unwrap();
+                            assert_eq!(
+                                loc.character,
+                                dtype == "CLOB",
+                                "{name}.{cname} rowid {rid}: locator type"
+                            );
+                            assert_eq!(
+                                loc.storage == odr_core::types::LobStorage::SecureFile,
+                                name == "T_LOB_SECURE",
+                                "{name}.{cname} rowid {rid}: storage kind"
+                            );
+                            match &v {
+                                Value::LobOutOfLine { .. } => {
+                                    // 6000 > inline limit: data is in the LOB segment.
+                                    assert!(
+                                        want_len > 3_964,
+                                        "{name}.{cname} rowid {rid}: out-of-line but Oracle length {want_len}"
+                                    );
+                                    assert!(!v.is_exact());
+                                    lob_out_of_line += 1;
+                                }
+                                Value::Text { text, invalid, .. } => {
+                                    assert_eq!(*invalid, 0);
+                                    assert_eq!(
+                                        text.chars().count(),
+                                        want_len,
+                                        "{name}.{cname} rowid {rid}: CLOB length"
+                                    );
+                                    let want = unasciistr(data_txt).unwrap();
+                                    assert_eq!(
+                                        text, &want,
+                                        "{name}.{cname} rowid {rid}: CLOB data"
+                                    );
+                                }
+                                Value::Raw(b) => {
+                                    assert_eq!(
+                                        b.len(),
+                                        want_len,
+                                        "{name}.{cname} rowid {rid}: BLOB length"
+                                    );
+                                    assert_eq!(
+                                        odr_core::types::char::raw_to_hex(b),
+                                        data_txt,
+                                        "{name}.{cname} rowid {rid}: BLOB data"
+                                    );
+                                }
+                                other => panic!("{name}.{cname} rowid {rid}: {other:?}"),
+                            }
+                            lob_checked += 1;
+                        }
+                    }
+                    values_checked += 1;
+                    continue;
                 }
                 assert_eq!(
                     got_bytes,
@@ -1150,18 +1276,35 @@ fn lab_values_match_oracle_dump_byte_for_byte() {
         tables_checked += 1;
     }
     eprintln!(
-        "golden values: {tables_checked} tables, {values_checked} byte-exact, {canonical_checked} canonical, {escaped_checked} un-escaped"
+        "golden values: {tables_checked} tables, {values_checked} byte-exact, {canonical_checked} canonical, {escaped_checked} un-escaped, {lob_checked} LOB ({lob_out_of_line} out of line)"
     );
     // Step g closed: every truth value compared — T_ADDCOL's fast-added NN/NL
     // (12 values) are checked through `materialize` above rather than as
     // stored bytes, so they are added back here to reach the exact total.
-    assert_eq!(tables_checked, 15, "tables");
-    assert_eq!(
-        values_checked + 12,
-        truth_total,
-        "every truth value compared"
-    );
-    assert_eq!(values_checked, 141_601, "stored values byte-exact");
+    // Golden v2: T_COMPRESS (6,000 values) is refused whole (LV-069) and
+    // counted in the rowid test instead.
+    if v2 {
+        assert_eq!(tables_checked, 17, "tables");
+        assert_eq!(
+            values_checked + 12 + 6_000,
+            truth_total,
+            "every truth value compared"
+        );
+        // 2 tables × 6 rows × 2 LOB columns = 24, minus 3 NULL locators per table.
+        assert_eq!(lob_checked, 18, "LOB locators decoded");
+        assert_eq!(
+            lob_out_of_line, 4,
+            "out-of-line LOBs reported, never guessed"
+        );
+    } else {
+        assert_eq!(tables_checked, 15, "tables");
+        assert_eq!(
+            values_checked + 12,
+            truth_total,
+            "every truth value compared"
+        );
+        assert_eq!(values_checked, 141_601, "stored values byte-exact");
+    }
     assert!(
         escaped_checked >= 10_009,
         "ASCIISTR-escaped texts compared: {escaped_checked}"
@@ -1300,6 +1443,8 @@ fn lab_dictionary_resolves_odr_tables_like_oracle() {
                 s if s.starts_with("TIMESTAMP") => "Timestamp",
                 s if s.starts_with("INTERVAL YEAR") => "IntervalYm",
                 s if s.starts_with("INTERVAL DAY") => "IntervalDs",
+                "CLOB" => "Clob",
+                "BLOB" => "Blob",
                 other => panic!("unexpected type {other}"),
             };
             let got_ty = format!("{ty:?}");
@@ -1330,14 +1475,30 @@ fn lab_dictionary_resolves_odr_tables_like_oracle() {
         }
         checked += 1;
     }
-    assert_eq!(checked, 13, "all heap tables resolved");
+    assert!(
+        checked == 13 || checked == 16,
+        "all heap tables resolved: {checked}"
+    );
     // Cluster members: TAB$ must say clustered with bobj# = C_ODR and tab# 1/2;
-    // CLU$ must give C_ODR's segment (segments.txt: C_ODR|72539|72539|CLUSTER|ODR_ASSM|16|2179).
+    // CLU$ must give C_ODR's segment as segments.txt reports it
+    // (v1: C_ODR|72539|72539|CLUSTER|ODR_ASSM|16|2179).
     let c_odr = dict.objects.values().find(|o| o.name == "C_ODR").unwrap();
     let clu = &dict.clusters[&c_odr.obj];
+    let segs = std::fs::read_to_string(g.join("meta/segments.txt")).unwrap();
+    let seg_line = segs
+        .lines()
+        .find(|l| l.starts_with("C_ODR|"))
+        .map(|l| l.split('|').collect::<Vec<_>>())
+        .unwrap();
     assert_eq!(
         (clu.dataobj, clu.file, clu.block, clu.cols, clu.hashkeys),
-        (Some(72539), 16, 2179, 2, 0)
+        (
+            Some(seg_line[2].parse().unwrap()),
+            seg_line[5].parse().unwrap(),
+            seg_line[6].parse().unwrap(),
+            2,
+            0
+        )
     );
     assert_eq!(dict.tablespace_name(clu.ts), Some("ODR_ASSM"));
     for (n, tab) in [("T_CL_DEPT", 1u32), ("T_CL_EMP", 2)] {
@@ -1437,6 +1598,11 @@ fn lab_end_to_end_dictionary_to_cells() {
     let mut tables = 0usize;
     for t in dict.tables() {
         if t.owner_name.as_deref() != Some("ODR") || t.is_clustered() {
+            continue;
+        }
+        if t.name == "T_COMPRESS" || t.name.starts_with("T_LOB_") {
+            // T_COMPRESS: refused whole (LV-069). T_LOB_*: values checked in
+            // lab_values_match_oracle_dump_byte_for_byte (LV-068).
             continue;
         }
         let file = abs_file(&t);

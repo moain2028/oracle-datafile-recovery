@@ -1,0 +1,227 @@
+//! In-row LOB locators (`CLOB`/`NCLOB` type# 112, `BLOB` type# 113) — M5.
+//!
+//! A LOB column stores a **locator** in the row. With `ENABLE STORAGE IN
+//! ROW` (the default) a LOB of up to ≈ 3,964 bytes is stored *inline*: the
+//! data follows the locator inside the same column value. Larger LOBs live
+//! in the LOB segment and the column holds only the locator plus chunk
+//! addresses.
+//!
+//! Layout as **measured on 26ai** (lab-verify LV-068; 12 locators of
+//! `T_LOB_BASIC` / `T_LOB_SECURE`, every field matched against
+//! `DBMS_LOB.GETLENGTH` / `DBMS_LOB.SUBSTR` of the same row):
+//!
+//! ```text
+//! off  size  field                                   measured
+//! 0    4     00 70 00 01                             constant
+//! 4    1     type: 02 = CLOB, 01 = BLOB              -
+//! 5    1     0c                                      constant
+//! 6    1     80 = character LOB, 00 = binary         -
+//! 7    1     00 = BasicFile, 80 = SecureFile         -
+//! 8    2     00 02 (CLOB) / 00 01 (BLOB)             -
+//! 10   10    LOB id                                  unique per LOB value
+//! 20   2     u16 BE: bytes from offset 20 to the end -
+//! 22   …     inode (differs by storage kind):
+//!   BasicFile inline:  09 xx xx xx | u32 BE len | 6 bytes | data (len bytes, to the end)
+//!   BasicFile out-row: 05 … | chunk DBAs
+//!   SecureFile inline: 48 90 | u16 BE rest | lenlen k | len (k+2 bytes BE) | 01 (00 if empty) | data
+//!   SecureFile out-row:40 90 | …
+//! ```
+//!
+//! The decoder is **conservative**: inline data is accepted only when the
+//! declared length ends exactly at the end of the column value. Anything
+//! else is `DecodeError::Malformed` (⇒ `Value::Invalid`, raw kept), and an
+//! out-of-line locator is returned as [`LobData::OutOfLine`] — never as
+//! NULL, never as an empty string. `CLOB` data in a database whose
+//! character set is a varying-width Unicode set (`AL32UTF8`, `UTF8`) is
+//! stored as UCS-2 big-endian (`AL16UTF16`); in a fixed single-byte
+//! database character set it is stored in that character set (Oracle
+//! Oracle LOB Developer's Guide — the single-byte case
+//! has no lab file yet: LV-068 ⬜ for it).
+
+use crate::ByteOrder;
+use crate::bytes::{read_u8, read_u16, read_u32};
+use crate::error::{DecodeError, DecodeResult};
+
+const WHAT: &str = "lob locator";
+
+/// Fixed locator header length.
+pub const HEADER_LEN: usize = 20;
+
+/// LOB storage kind (locator byte 7).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LobStorage {
+    /// `STORE AS BASICFILE`.
+    BasicFile,
+    /// `STORE AS SECUREFILE`.
+    SecureFile,
+}
+
+/// Where the LOB data is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LobData<'a> {
+    /// Data stored in the row right after the inode header (may be empty:
+    /// `EMPTY_CLOB()` / `EMPTY_BLOB()` is a locator with zero data bytes).
+    Inline(&'a [u8]),
+    /// Data lives in the LOB segment; only the locator is in the row.
+    OutOfLine,
+}
+
+/// A decoded LOB locator.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LobLocator<'a> {
+    /// `true` for CLOB/NCLOB (type byte `02`), `false` for BLOB (`01`).
+    pub character: bool,
+    /// Storage kind.
+    pub storage: LobStorage,
+    /// 10-byte LOB id.
+    pub lobid: [u8; 10],
+    /// Data.
+    pub data: LobData<'a>,
+}
+
+impl<'a> LobLocator<'a> {
+    /// Parse a stored LOB column value. Multi-byte fields of the locator
+    /// are big-endian on the little-endian 26ai file (measured), so the
+    /// file byte order is not consulted.
+    ///
+    /// # Errors
+    /// `Malformed` when a header constant, the length field or the inline
+    /// fit does not match the bytes present.
+    pub fn parse(raw: &'a [u8]) -> DecodeResult<Self> {
+        let be = ByteOrder::Big;
+        if raw.len() < HEADER_LEN.saturating_add(2) {
+            return Err(DecodeError::malformed(
+                WHAT,
+                0,
+                "shorter than the 22-byte locator header",
+            ));
+        }
+        if read_u32(raw, 0, be)? != 0x0070_0001 {
+            return Err(DecodeError::malformed(
+                WHAT,
+                0,
+                "locator does not start with 00 70 00 01",
+            ));
+        }
+        let character = match read_u8(raw, 4)? {
+            0x02 => true,
+            0x01 => false,
+            _ => return Err(DecodeError::malformed(WHAT, 4, "unknown LOB type byte")),
+        };
+        if read_u8(raw, 5)? != 0x0c {
+            return Err(DecodeError::malformed(WHAT, 5, "byte 5 is not 0x0c"));
+        }
+        let storage = match read_u8(raw, 7)? {
+            0x00 => LobStorage::BasicFile,
+            0x80 => LobStorage::SecureFile,
+            _ => return Err(DecodeError::malformed(WHAT, 7, "unknown storage byte")),
+        };
+        let mut lobid = [0u8; 10];
+        lobid.copy_from_slice(crate::bytes::slice_at(raw, 10, 10)?);
+        let rest = usize::from(read_u16(raw, HEADER_LEN, be)?);
+        if HEADER_LEN.saturating_add(rest) != raw.len() {
+            return Err(DecodeError::malformed(
+                WHAT,
+                HEADER_LEN,
+                "locator length field does not reach the end of the column",
+            ));
+        }
+        let body =
+            crate::bytes::slice_at(raw, HEADER_LEN.saturating_add(2), rest.saturating_sub(2))?;
+        let data = match storage {
+            LobStorage::BasicFile => Self::basic_body(body)?,
+            LobStorage::SecureFile => Self::secure_body(body)?,
+        };
+        Ok(Self {
+            character,
+            storage,
+            lobid,
+            data,
+        })
+    }
+
+    /// `BasicFile` inode: `09` inline / `05` out of row.
+    fn basic_body(body: &'a [u8]) -> DecodeResult<LobData<'a>> {
+        match read_u8(body, 0)? {
+            0x09 => {
+                let len = usize::try_from(read_u32(body, 4, ByteOrder::Big)?)
+                    .map_err(|_| DecodeError::malformed(WHAT, 26, "inline length"))?;
+                let data = crate::bytes::slice_at(body, 14, len)?;
+                if 14usize.saturating_add(len) != body.len() {
+                    return Err(DecodeError::malformed(
+                        WHAT,
+                        26,
+                        "BasicFile inline length does not fill the column",
+                    ));
+                }
+                Ok(LobData::Inline(data))
+            }
+            0x05 => Ok(LobData::OutOfLine),
+            _ => Err(DecodeError::malformed(
+                WHAT,
+                22,
+                "unknown BasicFile inode flag",
+            )),
+        }
+    }
+
+    /// `SecureFile` inode: `48 90` inline / `40 90` out of row.
+    fn secure_body(body: &'a [u8]) -> DecodeResult<LobData<'a>> {
+        let flag = read_u8(body, 0)?;
+        if read_u8(body, 1)? != 0x90 {
+            return Err(DecodeError::malformed(
+                WHAT,
+                23,
+                "SecureFile inode byte 1 is not 0x90",
+            ));
+        }
+        let rest = usize::from(read_u16(body, 2, ByteOrder::Big)?);
+        if 4usize.saturating_add(rest) != body.len() {
+            return Err(DecodeError::malformed(
+                WHAT,
+                24,
+                "SecureFile inode length does not reach the end of the column",
+            ));
+        }
+        match flag {
+            0x48 => {
+                // Variable-width length: indicator k ⇒ k + 2 big-endian bytes.
+                let k = usize::from(read_u8(body, 4)?);
+                if k > 2 {
+                    return Err(DecodeError::malformed(WHAT, 26, "SecureFile length width"));
+                }
+                let width = k.saturating_add(2);
+                let len_bytes = crate::bytes::slice_at(body, 5, width)?;
+                let len = len_bytes.iter().fold(0usize, |acc, &b| {
+                    acc.saturating_mul(256).saturating_add(usize::from(b))
+                });
+                let marker_at = 5usize.saturating_add(width);
+                let marker = read_u8(body, marker_at)?;
+                let expected_marker = u8::from(len != 0);
+                if marker != expected_marker {
+                    return Err(DecodeError::malformed(
+                        WHAT,
+                        22,
+                        "SecureFile inline marker byte",
+                    ));
+                }
+                let data_at = marker_at.saturating_add(1);
+                let data = crate::bytes::slice_at(body, data_at, len)?;
+                if data_at.saturating_add(len) != body.len() {
+                    return Err(DecodeError::malformed(
+                        WHAT,
+                        26,
+                        "SecureFile inline length does not fill the column",
+                    ));
+                }
+                Ok(LobData::Inline(data))
+            }
+            0x40 => Ok(LobData::OutOfLine),
+            _ => Err(DecodeError::malformed(
+                WHAT,
+                22,
+                "unknown SecureFile inode flag",
+            )),
+        }
+    }
+}

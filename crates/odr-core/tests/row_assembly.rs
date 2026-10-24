@@ -216,10 +216,119 @@ fn typed_values_and_canonical_text() {
         ColumnType::from_oracle(1, 2),
         ColumnType::Varchar2 { national: true }
     );
+    // LV-068: LOB locators are decoded since 2026-10-24.
     assert_eq!(
         ColumnType::from_oracle(112, 1),
-        ColumnType::Unsupported(112)
+        ColumnType::Clob { national: false }
     );
+    assert_eq!(ColumnType::from_oracle(113, 1), ColumnType::Blob);
+    assert_eq!(
+        ColumnType::from_oracle(114, 1),
+        ColumnType::Unsupported(114)
+    );
+}
+
+/// LV-068 — in-row LOB locators, bytes copied from the real 26ai blocks
+/// (`T_LOB_BASIC` block 16/3622 and `T_LOB_SECURE` block 16/4447 of golden
+/// `20261024T085903Z`). Inline data decodes exactly; the out-of-line
+/// locator is reported, never turned into NULL or an empty value; a
+/// truncated locator is `Invalid`, not a shorter LOB.
+#[test]
+fn lob_locators_from_real_blocks() {
+    use odr_core::types::{LobData, LobLocator, LobStorage};
+    // BasicFile BLOB, inline DEADBEEF00FF (T_LOB_BASIC id 1, col B).
+    let basic_blob: Vec<u8> =
+        hex("00700001010c0000000100000001000000096b2800160900000000000006000000000001deadbeef00ff");
+    let l = LobLocator::parse(&basic_blob).unwrap();
+    assert!(!l.character);
+    assert_eq!(l.storage, LobStorage::BasicFile);
+    assert_eq!(
+        l.data,
+        LobData::Inline(&[0xde, 0xad, 0xbe, 0xef, 0x00, 0xff])
+    );
+    assert_eq!(
+        decode_value(Some(&basic_blob), ColumnType::Blob, CS)
+            .canonical()
+            .as_deref(),
+        Some("DEADBEEF00FF")
+    );
+    // BasicFile empty CLOB (EMPTY_CLOB(), id 3).
+    let basic_empty: Vec<u8> =
+        hex("00700001020c8000000200000001000000096b2a00100900000000000000000000000000");
+    let l = LobLocator::parse(&basic_empty).unwrap();
+    assert!(l.character);
+    assert_eq!(l.data, LobData::Inline(&[]));
+    assert_eq!(
+        decode_value(Some(&basic_empty), ColumnType::Clob { national: false }, CS)
+            .canonical()
+            .as_deref(),
+        Some("")
+    );
+    // BasicFile out-of-line CLOB (6000 chars, id 6): locator only.
+    let basic_out: Vec<u8> = hex(
+        "00700001020c8000000200000001000000096b8700180500000000010f1c0000000000020400 0f5f04000f63",
+    );
+    let l = LobLocator::parse(&basic_out).unwrap();
+    assert_eq!(l.data, LobData::OutOfLine);
+    let v = decode_value(Some(&basic_out), ColumnType::Clob { national: false }, CS);
+    assert!(matches!(v, Value::LobOutOfLine { .. }));
+    assert!(!v.is_exact());
+    assert!(v.canonical().unwrap().starts_with("\\x0070"));
+    // SecureFile BLOB inline (id 1, col B).
+    let secure_blob: Vec<u8> =
+        hex("00700001010c0080000100000001000000096b8a00104890000a0000060 1deadbeef00ff");
+    let l = LobLocator::parse(&secure_blob).unwrap();
+    assert_eq!(l.storage, LobStorage::SecureFile);
+    assert_eq!(
+        l.data,
+        LobData::Inline(&[0xde, 0xad, 0xbe, 0xef, 0x00, 0xff])
+    );
+    // SecureFile empty BLOB (id 3).
+    let secure_empty: Vec<u8> =
+        hex("00700001010c0080000100000001000000096b8d000a489000040000 0000");
+    assert_eq!(
+        LobLocator::parse(&secure_empty).unwrap().data,
+        LobData::Inline(&[])
+    );
+    // SecureFile out of line (id 6, col B).
+    let secure_out: Vec<u8> =
+        hex("00700001010c0080000100000001000000096b910012409000 0c2100177001000104001350 01");
+    assert_eq!(
+        LobLocator::parse(&secure_out).unwrap().data,
+        LobData::OutOfLine
+    );
+    // SecureFile CLOB inline with Arabic (id 2): UCS-2 in row, AL32UTF8 database.
+    let secure_arabic: Vec<u8> = hex(
+        "00700001020c8080000200000001000000096b8b00304890002a0000260106410627062a0648063106290020063106420645002000310020002d00200645063106410642",
+    );
+    let v = decode_value(
+        Some(&secure_arabic),
+        ColumnType::Clob { national: false },
+        Charsets {
+            database: Charset::Al32Utf8,
+            national: Charset::Al16Utf16,
+        },
+    );
+    assert_eq!(v.canonical().as_deref(), Some("فاتورة رقم 1 - مرفق"));
+    // Truncated locator: Invalid, never a shorter LOB.
+    let cut = &basic_blob[..basic_blob.len() - 1];
+    assert!(matches!(
+        decode_value(Some(cut), ColumnType::Blob, CS),
+        Value::Invalid { .. }
+    ));
+    // Column type disagreeing with the locator (BLOB locator in a CLOB column): Invalid.
+    assert!(matches!(
+        decode_value(Some(&basic_blob), ColumnType::Clob { national: false }, CS),
+        Value::Invalid { .. }
+    ));
+}
+
+fn hex(s: &str) -> Vec<u8> {
+    let s: String = s.chars().filter(|c| !c.is_whitespace()).collect();
+    (0..s.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
+        .collect()
 }
 
 #[test]

@@ -396,6 +396,9 @@ fn classify(
                                 format!("{invalid} invalid byte sequences"),
                             Value::Invalid { .. } => "invalid encoding".to_owned(),
                             Value::Unsupported { .. } => "unsupported type".to_owned(),
+                            // LV-068: the locator is in the row, the data is not.
+                            Value::LobOutOfLine { .. } =>
+                                "LOB stored out of line (LOB segment not read yet, M5)".to_owned(),
                             _ => "not exact".to_owned(),
                         }
                     ));
@@ -506,6 +509,22 @@ pub(crate) fn extract(
         None => read_heap(&set, &seg, hdr_file, seg.objd),
         Some((tab, clucols)) => read_cluster(&set, &seg, hdr_file, seg.objd, tab, clucols),
     };
+    // LV-069: a BASIC/OLTP-compressed segment (`kdbhflag` 0x40, symbol table
+    // in kdbt[0]) is refused as a whole. Decoding its rows as plain rows
+    // would print symbol references as values — the exact wrong value the
+    // golden rule forbids. Nothing is written for such a table.
+    let compressed = rows
+        .skipped
+        .iter()
+        .filter(|(_, s)| {
+            matches!(s, Skip::Malformed(odr_core::DecodeError::Unsupported(m)) if m.contains("compressed"))
+        })
+        .count();
+    if compressed > 0 && rows.rows.is_empty() {
+        bail!(
+            "{table}: {compressed} data block(s) are BASIC/OLTP compressed (kdbh flag 0x40) — table compression is not supported yet (M5); refusing rather than guessing (LV-069)"
+        );
+    }
 
     std::fs::create_dir_all(out).with_context(|| format!("creating {}", out.display()))?;
     let visible = t.visible_columns();
@@ -541,10 +560,12 @@ pub(crate) fn extract(
         }
         let stored: Vec<Option<&[u8]>> = r.columns.iter().map(|c| c.as_deref()).collect();
         let cells = materialize(&t, &stored, cs);
-        if cells
-            .iter()
-            .any(|c| matches!(c, Cell::Verified(v) if !v.is_exact()))
-        {
+        // LV-068: an out-of-line LOB locator is a *known-unavailable* value
+        // (its data is in the LOB segment), not evidence that the block is
+        // altered — it must not taint its siblings.
+        if cells.iter().any(|c| {
+            matches!(c, Cell::Verified(v) if !v.is_exact() && !matches!(v, Value::LobOutOfLine { .. }))
+        }) {
             tainted.insert(r.provenance.rdba);
         }
     }

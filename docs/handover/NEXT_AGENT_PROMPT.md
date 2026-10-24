@@ -14,8 +14,9 @@ by a documented rule and labelled with the rule), or `rejected` (with a reason).
 never default to NULL, never trust a published source over the real file.
 
 ## Read in this order (≈ 25 minutes) — do not skip
-0. `docs/handover/2026-10-21_session_handover.md` — **the latest state (2026-10-21 part 2): what was
-   merged (#23–#31), LV-061..066, what is left in order, declared limits.** Start here.
+0. `docs/handover/2026-10-24_session_handover.md` — **the latest state (2026-10-24): PR #33 merged,
+   step g closed (LV-067, 141,613/141,613), exact plan for LOB (M5) incl. export-script caveat.** Start here.
+0b. `docs/handover/2026-10-21_session_handover.md` — PRs #23–#31, LV-061..066, declared limits.
 1. `docs/handover/2026-10-18_final_handover.md` — **state, methodology, measured numbers, known
    limits, and the remaining plan with acceptance criteria (§6).** This is your work order.
 2. `docs/runbooks/agent-environment.md` — how to rebuild the sandbox from zero (Rust, GitHub token,
@@ -46,13 +47,13 @@ cd /home/user/webapp
 export ODR_GOLDEN=$PWD/lab/out/golden/<26ai-run> ODR_GOLDEN2=$PWD/lab/out/golden/<11g-run>
 cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace \
   && cargo doc --workspace --no-deps && python3 tools/gen_charsets.py --check && (cd fuzz && cargo check --bins)
-# expected: golden_cli 8/8 (≈ 90 s), golden_lab 11/11, ≈111 tests total
+# expected: golden_cli 8/8 (≈ 90 s), golden_lab 12/12, ≈114 tests total
 ```
 If anything is red, fix the environment first (runbook §6 lists every problem met so far and its fix).
 Do not start feature work on a red baseline.
 
-## Then work, in this order (acceptance criteria in `2026-10-21_session_handover.md` §3)
-1. **F — close step g**: `lab_values_match_oracle_dump_byte_for_byte` to 141,613/141,613 (T_CL_* via `read_cluster`, decode `\XXXX` UNISTR escapes).
+## Then work, in this order (acceptance criteria in `2026-10-24_session_handover.md` §3)
+1. ~~F — close step g~~ ✅ done 2026-10-24 (LV-067, PR #33).
 2. **LOB + compression (M5)**: add a LOB table to `lab/sql/10_corpus.sql`, rebuild a golden set (runbook §4/§7b), read inline LOBs; compressed blocks stay an explicit refusal until implemented.
 3. **Extend `odr scavenge`** type candidates (INTERVAL, TSTZ, BINARY_*, NCHAR) **with hold-out**: tune on 26ai only, then measure on 11g and 21c without touching the code again.
 4. Anything the owner reports from the Windows trial (`docs/field/TRIAL_KIT_ar.md`).
@@ -117,3 +118,4 @@ pasted into the chat once the session is over.
 - Windows CI once failed on Python `read_text()` decoding, not on CRLF (runbook §5b lesson).
 - Docker in the sandbox needs `"iptables": false, "bridge": "none"` and `--network host`.
 - Disk is tight (29 GB): the Oracle image is 10 GB; keep only the 4 golden datafiles (≈ 490 MB).
+- Truth export writes text through `ASCIISTR()`: `\XXXX` per UTF-16 unit, backslash = `\005C`; the test helper `unasciistr` in `golden_lab.rs` is the exact inverse (LV-067). On CLOB columns `DUMP()` dumps the *locator*, not the data — extend `20_export_golden.sql` before building the LOB golden set.

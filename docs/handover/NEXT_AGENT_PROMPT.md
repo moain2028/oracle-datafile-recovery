@@ -14,12 +14,14 @@ by a documented rule and labelled with the rule), or `rejected` (with a reason).
 never default to NULL, never trust a published source over the real file.
 
 ## Read in this order (≈ 25 minutes) — do not skip
+0. `docs/handover/2026-10-21_session_handover.md` — **the latest state (2026-10-21 part 2): what was
+   merged (#23–#31), LV-061..066, what is left in order, declared limits.** Start here.
 1. `docs/handover/2026-10-18_final_handover.md` — **state, methodology, measured numbers, known
    limits, and the remaining plan with acceptance criteria (§6).** This is your work order.
 2. `docs/runbooks/agent-environment.md` — how to rebuild the sandbox from zero (Rust, GitHub token,
    Docker without iptables, Oracle 26ai, the lab, the golden set). Every command there has run and worked.
 3. `AGENTS.md`, `STATUS.md`, `CHANGELOG.md`, `LESSONS.md`.
-4. `docs/design/lab-verify.md` — the 67 binary facts (LV-001..060). Any new binary constant you
+4. `docs/design/lab-verify.md` — the binary facts (LV-001..066). Any new binary constant you
    introduce gets a new `LV-xxx` row **before** merge.
 5. `docs/requirements/REQ-004.md`, `docs/adr/0002-read-only-evidence.md`, `docs/adr/0005-engineering-quality-bar.md`.
 6. Code entry points: `crates/odr-core/src/dict/{resolver,rows,schema}.rs`,
@@ -34,23 +36,35 @@ cd /home/user/webapp && source ~/.cargo/env || true
 # 1. toolchain + GitHub (runbook §1–§2; ask the owner for a token with repo+workflow if none works)
 # 2. confirm repository state
 git checkout main && git pull && gh pr list --state open      # expected: only #10 (Astra, stale)
-# 3. golden set (62 MB, runbook §4 "faster alternative")
-cd lab && mkdir -p out/golden && cd out/golden && gh release download golden-26ai-20261018 \
-  --repo moain2026/oracle-datafile-recovery -p '*.tar.gz' -p '*.sha256' && sha256sum -c odr_golden.sha256 && tar -xzf odr_golden_26ai_*.tar.gz
+# 3. golden sets (runbook §4 "faster alternative"; the .sha256 of 26ai carries an absolute path — compare the hash by hand)
+cd lab && mkdir -p out/golden && cd out/golden
+gh release download golden-26ai-20261018 --repo moain2026/oracle-datafile-recovery -p '*.tar.gz' -p '*.sha256' && tar -xzf odr_golden_26ai_*.tar.gz
+gh release download golden-11g-20261021  --repo moain2026/oracle-datafile-recovery -p '*.tar.gz' && tar -xzf *11g*.tar.gz
+gh release download golden-21c-20261021  --repo moain2026/oracle-datafile-recovery -p '*.tar.gz' && tar -xzf *21c*.tar.gz
 cd /home/user/webapp
-# 4. every gate must be green BEFORE you change anything
-cargo fmt --all -- --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
-RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
-python3 tools/gen_charsets.py --check
-(cd fuzz && cargo check --bins)
-export ODR_GOLDEN=$PWD/lab/out/golden/20261018T080131Z
-cargo test -p odr-core --test golden_lab      # expect 8 passed
-cargo test -p odr-cli                         # expect 5 passed (≈ 90 s)
+# 4. gates — all must be green before any work (ODR_GOLDEN = the 26ai dir, ODR_GOLDEN2 = the 11g or 21c dir)
+export ODR_GOLDEN=$PWD/lab/out/golden/<26ai-run> ODR_GOLDEN2=$PWD/lab/out/golden/<11g-run>
+cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace \
+  && cargo doc --workspace --no-deps && python3 tools/gen_charsets.py --check && (cd fuzz && cargo check --bins)
+# expected: golden_cli 8/8 (≈ 90 s), golden_lab 11/11, ≈111 tests total
 ```
 If anything is red, fix the environment first (runbook §6 lists every problem met so far and its fix).
 Do not start feature work on a red baseline.
+
+## Then work, in this order (acceptance criteria in `2026-10-21_session_handover.md` §3)
+1. **F — close step g**: `lab_values_match_oracle_dump_byte_for_byte` to 141,613/141,613 (T_CL_* via `read_cluster`, decode `\XXXX` UNISTR escapes).
+2. **LOB + compression (M5)**: add a LOB table to `lab/sql/10_corpus.sql`, rebuild a golden set (runbook §4/§7b), read inline LOBs; compressed blocks stay an explicit refusal until implemented.
+3. **Extend `odr scavenge`** type candidates (INTERVAL, TSTZ, BINARY_*, NCHAR) **with hold-out**: tune on 26ai only, then measure on 11g and 21c without touching the code again.
+4. Anything the owner reports from the Windows trial (`docs/field/TRIAL_KIT_ar.md`).
+
+## Workflow (every change, no exceptions)
+branch `lead/<feature>` → inspect the real bytes first → smallest fix → test that **fails without the fix**
+(check with `git stash`) and cites `LV-xxx` → all gates + both golden suites → docs (lab-verify row,
+CHANGELOG, STATUS, LESSONS for any >30-min problem, handover §6, session plan log) → push → wait for
+**all 4 CI jobs** (ubuntu, windows, licenses, fuzz-smoke) → `gh pr merge N --squash --delete-branch` →
+`git checkout main && git pull`. Any parser touched ⇒ `cd fuzz && cargo +nightly fuzz run <target> -- -max_total_time=45`.
+Never commit `*.dbf`, `lab/out/`, traces, or `fuzz/corpus/data_block/` / new `fuzz/corpus/segment/*` (untracked side effects).
+No `unsafe`; no indexing/unwrap/panic in library code (clippy denies them).
 
 ## Then work the plan — `final_handover.md` §6, strictly in order
 1. **Close the torn-block recall gap** (`dict/rows.rs`: in a non-`Valid` block never apply flag-based

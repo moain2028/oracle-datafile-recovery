@@ -48,6 +48,64 @@ fn block(img: &[u8], n: u32) -> &[u8] {
     &img[n as usize * BS..(n as usize + 1) * BS]
 }
 
+/// Undo Oracle's `ASCIISTR()` escaping used by the truth export for text
+/// columns (`20_export_golden.sql`): every non-ASCII character becomes
+/// `\XXXX` (one UTF-16 code unit, upper-case hex; characters outside the
+/// BMP become a surrogate pair `\D8xx\DCxx`), and a literal backslash
+/// becomes `\005C`. Anything that is not exactly that grammar makes the
+/// function return `None`, so a malformed truth line can never be
+/// "decoded" into something that happens to match (step g).
+fn unasciistr(s: &str) -> Option<String> {
+    let mut out = String::with_capacity(s.len());
+    let mut units: Vec<u16> = Vec::new();
+    let mut rest = s;
+    let flush = |units: &mut Vec<u16>, out: &mut String| -> Option<()> {
+        if !units.is_empty() {
+            let decoded: String = char::decode_utf16(units.drain(..))
+                .collect::<Result<_, _>>()
+                .ok()?;
+            out.push_str(&decoded);
+        }
+        Some(())
+    };
+    while let Some(i) = rest.find('\\') {
+        out.push_str(&rest[..i]);
+        let hex = rest.get(i + 1..i + 5)?;
+        if hex.len() != 4 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return None;
+        }
+        units.push(u16::from_str_radix(hex, 16).ok()?);
+        rest = &rest[i + 5..];
+        // Consecutive escapes may form a surrogate pair: keep collecting
+        // until the next literal character.
+        if !rest.starts_with('\\') {
+            flush(&mut units, &mut out)?;
+        }
+    }
+    flush(&mut units, &mut out)?;
+    out.push_str(rest);
+    Some(out)
+}
+
+#[test]
+fn unasciistr_decodes_the_export_grammar_exactly() {
+    assert_eq!(unasciistr("abc").as_deref(), Some("abc"));
+    assert_eq!(
+        unasciistr("\\0633\\062F\\0627\\062F \\0641 1").as_deref(),
+        Some("سداد ف 1")
+    );
+    assert_eq!(unasciistr("\\00E9\\20AC").as_deref(), Some("é€"));
+    // surrogate pair (U+1F600)
+    assert_eq!(unasciistr("\\D83D\\DE00").as_deref(), Some("😀"));
+    // literal backslash (Oracle writes it as a full 4-digit unit)
+    assert_eq!(unasciistr("a\\005Cb").as_deref(), Some("a\\b"));
+    // malformed: short / non-hex / lone surrogate ⇒ None, never a guess
+    assert_eq!(unasciistr("\\06"), None);
+    assert_eq!(unasciistr("a\\5Cb"), None);
+    assert_eq!(unasciistr("\\06ZZ"), None);
+    assert_eq!(unasciistr("\\D83D x"), None);
+}
+
 #[test]
 fn lab_kcvfh_matches_x_kcvfh() {
     let Some(g) = golden() else { return };
@@ -715,16 +773,21 @@ fn lab_torn_block_accounts_for_every_slot() {
     }
 }
 
-/// Step g (plan 2026-10-18 §5): **every stored value of every heap table**
-/// must equal, byte for byte, what Oracle's own `DUMP(col, 1016)` printed
-/// into `rows.psv` (141,613 truth values). Columns are matched by
-/// `segment_column_id` from `meta/columns.txt`, rows by ROWID. Then the
-/// canonical text of NUMBER / DATE / CHAR / VARCHAR2 / RAW values is compared
-/// with Oracle's `TO_CHAR` output, and `T_ADDCOL` proves the fast-ADD-COLUMN
-/// rule: an absent column becomes `Inferred(DEFAULT$)`, never a NULL.
+/// Step g (plan 2026-10-18 §5, closed 2026-10-24): **every stored value of
+/// every table — heap and cluster member** — must equal, byte for byte,
+/// what Oracle's own `DUMP(col, 1016)` printed into `rows.psv`: exactly
+/// **141,613** truth values, none skipped. Columns are matched by
+/// `segment_column_id` from `meta/columns.txt` (for a cluster member the
+/// key columns carry segcol 1..clucols and the member's own columns follow —
+/// LV-021/LV-067), rows by ROWID. Then the canonical text of NUMBER / DATE /
+/// CHAR / VARCHAR2 / RAW values is compared with Oracle's `TO_CHAR` output;
+/// text the export wrote as `ASCIISTR` escapes (`\0633…`, 10,009 Arabic /
+/// Latin-1 / symbol values) is un-escaped with [`unasciistr`] and compared
+/// too. `T_ADDCOL` proves the fast-ADD-COLUMN rule: an absent column
+/// becomes `Inferred(DEFAULT$)`, never a NULL.
 #[test]
 fn lab_values_match_oracle_dump_byte_for_byte() {
-    use odr_core::dict::rows::read_heap;
+    use odr_core::dict::rows::{read_cluster, read_heap};
     use odr_core::dict::schema::{Cell, ColumnDef, TableDef, materialize};
     use odr_core::dict::source::{BlockSource, FileInfo, ImageSet};
     use odr_core::value::{Charsets, ColumnType, decode_value};
@@ -835,21 +898,44 @@ fn lab_values_match_oracle_dump_byte_for_byte() {
         }
     }
 
+    // Total number of truth values: every (table, rowid, column) line.
+    let truth_total: usize = truth.values().map(HashMap::len).sum();
+    assert_eq!(truth_total, 141_613, "rows.psv lines");
     let segs = std::fs::read_to_string(g.join("meta/segments.txt")).unwrap();
     let mut values_checked = 0usize;
     let mut canonical_checked = 0usize;
+    let mut escaped_checked = 0usize;
     let mut tables_checked = 0usize;
+    // Segments to read: heap tables as themselves; the cluster segment
+    // once per member table. `(table name, dataobj, file, header block,
+    // Some((tab#, clucols)) for a member)`. Member tab#/clucols come from
+    // the dictionary test's assertions on TAB$ (T_CL_DEPT tab 1, T_CL_EMP
+    // tab 2, CLUCOLS 2) — the only lab constants this test needs.
+    let mut work: Vec<(String, u32, u32, u32, Option<(usize, usize)>)> = Vec::new();
+    let mut seen_cluster = std::collections::HashSet::new();
     for line in segs.lines() {
         let p: Vec<&str> = line.split('|').collect();
-        if p.len() < 7 || p[3] != "TABLE" {
+        if p.len() < 7 {
             continue;
         }
-        let (name, dataobj, file, hb): (&str, u32, u32, u32) = (
-            p[0],
+        let (dataobj, file, hb): (u32, u32, u32) = (
             p[2].parse().unwrap(),
             p[5].parse().unwrap(),
             p[6].parse().unwrap(),
         );
+        match p[3] {
+            "TABLE" => work.push((p[0].to_owned(), dataobj, file, hb, None)),
+            "CLUSTER" if seen_cluster.insert(p[0].to_owned()) => {
+                for (tname, tab) in [("T_CL_DEPT", 1usize), ("T_CL_EMP", 2)] {
+                    work.push((tname.to_owned(), dataobj, file, hb, Some((tab, 2))));
+                }
+            }
+            _ => {}
+        }
+    }
+    for (name, dataobj, file, hb, cluster) in &work {
+        let name = name.as_str();
+        let (dataobj, file, hb) = (*dataobj, *file, *hb);
         let Some(tcols) = cols.get(name) else {
             continue;
         };
@@ -864,7 +950,22 @@ fn lab_values_match_oracle_dump_byte_for_byte() {
             src.block(a)
         })
         .unwrap();
-        let got = read_heap(&src, &seg, file, dataobj);
+        let got = match cluster {
+            None => read_heap(&src, &seg, file, dataobj),
+            Some((tab, clucols)) => read_cluster(&src, &seg, file, dataobj, *tab, *clucols),
+        };
+        if let Some((_, clucols)) = cluster {
+            // LV-067: in a cluster member the key columns are segcol
+            // 1..=clucols; the member's own stored columns follow.
+            for (segcol, cname, _) in &tcols {
+                let is_key = cname.starts_with('K');
+                assert_eq!(
+                    is_key,
+                    usize::try_from(*segcol).unwrap() <= *clucols,
+                    "{name}.{cname}: segcol {segcol} vs CLUCOLS {clucols}"
+                );
+            }
+        }
         let mut rows_seen = 0usize;
         for r in got.rows.iter().map(|r| r.as_ref().unwrap()) {
             let (f, b) = Rdba(r.provenance.rdba).split(scheme);
@@ -924,9 +1025,16 @@ fn lab_values_match_oracle_dump_byte_for_byte() {
                     // Oracle TO_CHAR drops the leading zero (".01", "-.5"); ODR keeps it.
                     "NUMBER" if want_text.starts_with('.') => format!("0{want_text}"),
                     "NUMBER" if want_text.starts_with("-.") => format!("-0{}", &want_text[1..]),
-                    // Arabic/UNISTR text was exported as \XXXX escapes; compare only pure-ASCII.
+                    // Text was exported through ASCIISTR: `\XXXX` per
+                    // non-ASCII UTF-16 unit, `\5C` for a backslash. Decode
+                    // it exactly or fail — never skip (step g).
                     "VARCHAR2" | "CHAR" | "NVARCHAR2" | "NCHAR" if want_text.contains('\\') => {
-                        continue;
+                        escaped_checked += 1;
+                        unasciistr(want_text).unwrap_or_else(|| {
+                            panic!(
+                                "{name}.{cname} rowid {rid}: truth escape malformed: {want_text}"
+                            )
+                        })
                     }
                     _ => want_text.clone(),
                 };
@@ -1042,10 +1150,22 @@ fn lab_values_match_oracle_dump_byte_for_byte() {
         tables_checked += 1;
     }
     eprintln!(
-        "golden values: {tables_checked} tables, {values_checked} byte-exact, {canonical_checked} canonical"
+        "golden values: {tables_checked} tables, {values_checked} byte-exact, {canonical_checked} canonical, {escaped_checked} un-escaped"
     );
-    assert!(tables_checked >= 12, "tables {tables_checked}");
-    assert!(values_checked >= 140_000, "values {values_checked}");
+    // Step g closed: every truth value compared — T_ADDCOL's fast-added NN/NL
+    // (12 values) are checked through `materialize` above rather than as
+    // stored bytes, so they are added back here to reach the exact total.
+    assert_eq!(tables_checked, 15, "tables");
+    assert_eq!(
+        values_checked + 12,
+        truth_total,
+        "every truth value compared"
+    );
+    assert_eq!(values_checked, 141_601, "stored values byte-exact");
+    assert!(
+        escaped_checked >= 10_009,
+        "ASCIISTR-escaped texts compared: {escaped_checked}"
+    );
 }
 
 /// Step f: `Dictionary::load` on the real 26ai SYSTEM file. Every ODR table
@@ -1313,6 +1433,7 @@ fn lab_end_to_end_dictionary_to_cells() {
         }
     };
     let mut cells_checked = 0usize;
+    let mut escaped = 0usize;
     let mut tables = 0usize;
     for t in dict.tables() {
         if t.owner_name.as_deref() != Some("ODR") || t.is_clustered() {
@@ -1383,7 +1504,11 @@ fn lab_end_to_end_dictionary_to_cells() {
                             }
                         }
                         if w.contains('\\') {
-                            continue; // UNISTR-escaped export
+                            // ASCIISTR-escaped export: decode exactly (step g).
+                            w = unasciistr(&w).unwrap_or_else(|| {
+                                panic!("{}.{} id {id}: malformed escape {w}", t.name, c.name)
+                            });
+                            escaped += 1;
                         }
                         assert_eq!(g.trim_end(), w, "{}.{} id {id} ({cell:?})", t.name, c.name);
                     }
@@ -1401,9 +1526,10 @@ fn lab_end_to_end_dictionary_to_cells() {
         assert!(n > 0, "{}: no rows", t.name);
         tables += 1;
     }
-    eprintln!("end-to-end: {tables} tables, {cells_checked} cells compared");
+    eprintln!("end-to-end: {tables} tables, {cells_checked} cells compared, {escaped} un-escaped");
     assert_eq!(tables, 13);
     assert!(cells_checked > 100_000);
+    assert!(escaped >= 10_007, "escaped texts compared: {escaped}");
 }
 
 /// LV-063 — *a second Oracle version, read with the same code.*
@@ -1496,6 +1622,7 @@ fn lab2_second_version_reads_like_oracle() {
     };
     let mut checked = 0;
     let mut journal_cells = 0usize;
+    let mut escaped = 0usize;
     for t in dict.tables() {
         if t.owner_name.as_deref() != Some("ODR") {
             continue;
@@ -1555,9 +1682,17 @@ fn lab2_second_version_reads_like_oracle() {
                 let want = &jt[&id];
                 for (c, cell) in visible.iter().zip(&cells) {
                     let w = want[&c.name].as_deref().map(|w| w.trim().to_owned());
-                    if w.as_deref().is_some_and(|w| w.contains('\\')) {
-                        continue; // UNISTR-escaped Arabic in the export (step g)
-                    }
+                    // ASCIISTR-escaped Arabic in the export: decoded, never skipped (step g).
+                    let w = w.map(|w| {
+                        if w.contains('\\') {
+                            escaped += 1;
+                            unasciistr(&w).unwrap_or_else(|| {
+                                panic!("T_JOURNAL.{} id {id}: malformed escape {w}", c.name)
+                            })
+                        } else {
+                            w
+                        }
+                    });
                     assert_eq!(
                         cell.canonical().map(|s| s.trim_end().to_owned()),
                         w,
@@ -1574,5 +1709,9 @@ fn lab2_second_version_reads_like_oracle() {
     assert!(
         journal_cells >= 100_000,
         "T_JOURNAL cells compared: {journal_cells}"
+    );
+    assert!(
+        escaped >= 10_000,
+        "T_JOURNAL escaped texts compared: {escaped}"
     );
 }

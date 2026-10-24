@@ -72,3 +72,10 @@
 - المالك طلب صراحةً ألا يُسلَّم شيء يمكن سرقته. **نُفِّذ**: `gh repo edit --visibility private` (تحقق 404 للعامة على المستودع والـ Release)؛ ADR-0007؛ `README_TRIAL.md`؛ SECURITY §IP؛ سكربتا التجربة ينزّلان من Release خاص (`gh` أو `ODR_TOKEN`) — مقاس: sh 33/33 عبر `gh` على الإصدار الخاص، ps1 32/32 على البناء الحالي، كلاهما يمر على v0.2.0-alpha (يرفض الضغط) وعلى البناء بعد LV-071 (يفكّه).
 - **عواقب الخاص على الخطة المجانية**: لا branch protection (403)؛ `gh pr checks`/`gh run list` تعطي 403 للتوكن (integration) — استخدمت `gh api pulls/N --jq .mergeable_state` (`unstable` = CI جارٍ، `clean` = كل الفحوص خضراء) كبديل مُثبت.
 - **مطلوب من المالك**: (1) تعديل `release.yml`: انسخ `docs/field/README_TRIAL.md QUICKSTART_ar.md TRIAL_KIT_ar.md try_odr.ps1 try_odr.sh` و**لا** تنسخ `CHANGELOG.md`/`README.md`؛ (2) دعوة الخبير كـ collaborator بصلاحية Read فقط أو إرسال الـ zip + golden يدوياً؛ (3) وسم `v0.3.0-alpha` بعد (1) ليحمل LV-071.
+
+## §8 — scavenge مع hold-out (LV-072، PR #40)
+
+- البروتوكول: ضبط على 26ai فقط (`/tmp/qs/holdout.py` كان سكربت القياس المؤقت؛ الاختبار الدائم `scavenge_type_candidates_never_name_a_wrong_type` يفعل الشيء نفسه عبر `odr dict --json` + `odr scavenge`). النتيجة: 0 خاطئ على الثلاث نسخ.
+- جرّبت NTEXT كمرشح ثم **أزلته بالقياس** (17 عموداً صارت ambiguous). الدرس: مرشح جديد يُقاس على كل الأعمدة الأخرى قبل قبوله، لا على عموده المستهدف فقط.
+- ما يبقى RAW بإعلان: NCHAR/NVARCHAR2، RAW، BINARY_FLOAT/DOUBLE، عمود ADD COLUMN DEFAULT غير المكتوب (NL).
+- **خطة الجلسة اكتملت**. المتبقي كله عند المالك (release.yml، ويندوز حقيقي، v0.3.0-alpha، قرار PR #10، رخصة 19c).

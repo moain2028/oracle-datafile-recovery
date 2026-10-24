@@ -1111,3 +1111,124 @@ fn scavenge_without_system_infers_journal_exactly_and_never_verifies() {
     }
     let _ = std::fs::remove_dir_all(&tmp);
 }
+
+/// LV-072 — type candidates of `odr scavenge` measured against the
+/// dictionary. Protocol: the candidate set was tuned on 26ai only; this
+/// test runs the **same** comparison on every golden set it is given
+/// (`ODR_GOLDEN` = 26ai tuning set, `ODR_GOLDEN2` = 11g/21c hold-out) and
+/// requires **zero wrongly named columns**. Abstentions (`RAW(...)`) are
+/// allowed and counted; TIMESTAMP(0) named DATE is not wrong (7-byte
+/// values are byte-identical and print identically).
+#[test]
+fn scavenge_type_candidates_never_name_a_wrong_type() {
+    let sets: Vec<PathBuf> = [golden(), std::env::var_os("ODR_GOLDEN2").map(PathBuf::from)]
+        .into_iter()
+        .flatten()
+        .collect();
+    if sets.is_empty() {
+        return;
+    }
+    for g in sets {
+        let dfs: Vec<PathBuf> = std::fs::read_dir(g.join("datafiles"))
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .collect();
+        let system = dfs
+            .iter()
+            .find(|p| p.to_string_lossy().contains("system"))
+            .unwrap()
+            .clone();
+        let data: Vec<&PathBuf> = dfs
+            .iter()
+            .filter(|p| p.to_string_lossy().contains("odr_odr"))
+            .collect();
+        let dict = Command::new(env!("CARGO_BIN_EXE_odr"))
+            .arg("dict")
+            .arg("--json")
+            .arg(&system)
+            .args(&data)
+            .output()
+            .unwrap();
+        let dict: serde_json::Value = serde_json::from_slice(&dict.stdout).unwrap();
+        let tmp = std::env::temp_dir().join(format!(
+            "odr_cli_scv_types_{}_{}",
+            std::process::id(),
+            g.file_name().unwrap().to_string_lossy()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let out = Command::new(env!("CARGO_BIN_EXE_odr"))
+            .arg("scavenge")
+            .args(&data)
+            .arg("--out")
+            .arg(&tmp)
+            .output()
+            .unwrap();
+        assert!(matches!(out.status.code(), Some(0 | 2)));
+        let report: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(tmp.join("report.json")).unwrap())
+                .unwrap();
+        let (mut named, mut abstained, mut wrong) = (0usize, 0usize, Vec::new());
+        let mut seen = std::collections::BTreeSet::new();
+        for obj in report["objects"].as_array().unwrap() {
+            let dataobj = obj["data_object_id"].as_u64().unwrap();
+            let Some(table) = dict["tables"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|t| t["owner"] == "ODR" && t["dataobj"].as_u64() == Some(dataobj))
+            else {
+                continue;
+            };
+            let cols: Vec<&serde_json::Value> = table["columns"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|c| c["hidden"] != true)
+                .collect();
+            for (i, c) in obj["columns"].as_array().unwrap().iter().enumerate() {
+                let Some(truth) = cols.get(i) else { break };
+                let truth = truth["type"].as_str().unwrap_or("?").to_owned();
+                let inferred = c["inferred_type"].as_str().unwrap();
+                if inferred.starts_with("RAW(") {
+                    abstained += 1;
+                    continue;
+                }
+                named += 1;
+                seen.insert(inferred.to_owned());
+                let ok = match inferred {
+                    "NUMBER" => truth == "Number",
+                    "DATE" => truth == "Date" || truth == "Timestamp",
+                    "TIMESTAMP" => truth == "Timestamp" || truth == "TimestampLtz",
+                    "TIMESTAMP WITH TIME ZONE" => truth == "TimestampTz",
+                    "INTERVAL YEAR TO MONTH" => truth == "IntervalYm",
+                    "INTERVAL DAY TO SECOND" => truth == "IntervalDs",
+                    "TEXT" => truth.contains("national: false"),
+                    "LOB" => truth.starts_with("Clob") || truth == "Blob",
+                    other => panic!("unknown inferred type {other}"),
+                };
+                if !ok {
+                    wrong.push(format!(
+                        "{}.{} is {truth} but scavenge said {inferred}",
+                        table["name"], cols[i]["name"]
+                    ));
+                }
+            }
+        }
+        eprintln!(
+            "{}: named {named}, abstained {abstained}, wrong {}, types seen {seen:?}",
+            g.display(),
+            wrong.len()
+        );
+        assert!(wrong.is_empty(), "{wrong:#?}");
+        assert!(named >= 45, "{named} named columns");
+        // The LV-072 candidates must actually fire on T_DATETIME.
+        for t in [
+            "TIMESTAMP WITH TIME ZONE",
+            "INTERVAL YEAR TO MONTH",
+            "INTERVAL DAY TO SECOND",
+        ] {
+            assert!(seen.contains(t), "{t} never named");
+        }
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+}

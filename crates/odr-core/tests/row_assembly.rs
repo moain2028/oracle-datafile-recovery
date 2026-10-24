@@ -269,7 +269,9 @@ fn lob_locators_from_real_blocks() {
         "00700001020c8000000200000001000000096b8700180500000000010f1c0000000000020400 0f5f04000f63",
     );
     let l = LobLocator::parse(&basic_out).unwrap();
-    assert_eq!(l.data, LobData::OutOfLine);
+    assert!(
+        matches!(l.data, LobData::OutOfLine { bytes: Some(12_000), ref chunks } if chunks == &[(0x0400_0f5f, 1), (0x0400_0f63, 1)])
+    );
     let v = decode_value(Some(&basic_out), ColumnType::Clob { national: false }, CS);
     assert!(matches!(v, Value::LobOutOfLine { .. }));
     assert!(!v.is_exact());
@@ -293,10 +295,10 @@ fn lob_locators_from_real_blocks() {
     // SecureFile out of line (id 6, col B).
     let secure_out: Vec<u8> =
         hex("00700001010c0080000100000001000000096b910012409000 0c2100177001000104001350 01");
-    assert_eq!(
+    assert!(matches!(
         LobLocator::parse(&secure_out).unwrap().data,
-        LobData::OutOfLine
-    );
+        LobData::OutOfLine { bytes: Some(6000), ref chunks } if chunks == &[(0x0400_1350, 1)]
+    ));
     // SecureFile CLOB inline with Arabic (id 2): UCS-2 in row, AL32UTF8 database.
     let secure_arabic: Vec<u8> = hex(
         "00700001020c8080000200000001000000096b8b00304890002a0000260106410627062a0648063106290020063106420645002000310020002d00200645063106410642",

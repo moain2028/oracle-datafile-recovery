@@ -260,7 +260,7 @@ pub fn decode_value(raw: Option<&[u8]>, ty: ColumnType, cs: Charsets) -> Value {
                     "locator LOB type disagrees with the column type",
                 )),
                 Ok(LobLocator {
-                    data: LobData::OutOfLine,
+                    data: LobData::OutOfLine { .. },
                     lobid,
                     ..
                 }) => Value::LobOutOfLine {

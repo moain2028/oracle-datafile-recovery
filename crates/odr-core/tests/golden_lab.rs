@@ -949,6 +949,7 @@ fn lab_values_match_oracle_dump_byte_for_byte() {
     );
     let mut lob_checked = 0usize;
     let mut lob_out_of_line = 0usize;
+    let mut lob_segment_read = 0usize;
     let segs = std::fs::read_to_string(g.join("meta/segments.txt")).unwrap();
     let mut values_checked = 0usize;
     let mut canonical_checked = 0usize;
@@ -1085,6 +1086,84 @@ fn lab_values_match_oracle_dump_byte_for_byte() {
                                     );
                                     assert!(!v.is_exact());
                                     lob_out_of_line += 1;
+                                    // LV-070: follow the chunk map into the LOB segment.
+                                    // CLOB data is UCS-2 ⇒ 2 bytes per char; both storage kinds
+                                    // carry the byte length in the locator (BasicFile packed).
+                                    let total_bytes = if dtype == "CLOB" {
+                                        want_len * 2
+                                    } else {
+                                        want_len
+                                    } as u64;
+                                    // The locator's own length must equal Oracle's.
+                                    assert!(
+                                        matches!(loc.data, odr_core::types::LobData::OutOfLine { bytes: Some(b), .. } if b == total_bytes),
+                                        "{name}.{cname} rowid {rid}: locator length {:?} vs {total_bytes}",
+                                        loc.data
+                                    );
+                                    let got = odr_core::dict::lob::read_out_of_line(
+                                        &src, file, &loc, None,
+                                    )
+                                    .unwrap_or_else(|e| {
+                                        panic!("{name}.{cname} rowid {rid}: {e:?}")
+                                    });
+                                    assert_eq!(
+                                        got.data.len() as u64,
+                                        total_bytes,
+                                        "{name}.{cname} rowid {rid}: LOB bytes"
+                                    );
+                                    if dtype == "CLOB" {
+                                        let d = odr_core::charset::decode(
+                                            &got.data,
+                                            Charset::Al16Utf16,
+                                        );
+                                        assert!(d.is_exact());
+                                        assert_eq!(d.text.chars().count(), want_len);
+                                        let want = unasciistr(data_txt).unwrap(); // first 4000 chars
+                                        assert!(
+                                            d.text.starts_with(&want),
+                                            "{name}.{cname} rowid {rid}: CLOB prefix"
+                                        );
+                                    } else {
+                                        let hex = odr_core::types::char::raw_to_hex(&got.data);
+                                        assert!(
+                                            hex.starts_with(data_txt),
+                                            "{name}.{cname} rowid {rid}: BLOB prefix"
+                                        );
+                                    }
+                                    // A foreign lobid must be refused, never read as data.
+                                    let mut bad = raw.to_vec();
+                                    bad[10] ^= 0x01;
+                                    let bad_loc = odr_core::types::LobLocator::parse(&bad).unwrap();
+                                    assert!(
+                                        matches!(
+                                            odr_core::dict::lob::read_out_of_line(
+                                                &src,
+                                                file,
+                                                &bad_loc,
+                                                Some(total_bytes)
+                                            ),
+                                            Err(
+                                                odr_core::dict::lob::LobReadError::ForeignLob { .. }
+                                            )
+                                        ),
+                                        "{name}.{cname}: foreign lobid accepted"
+                                    );
+                                    // A declared length beyond the chunks must be refused.
+                                    assert!(
+                                        matches!(
+                                            odr_core::dict::lob::read_out_of_line(
+                                                &src,
+                                                file,
+                                                &loc,
+                                                Some(total_bytes + 100_000)
+                                            ),
+                                            Err(
+                                                odr_core::dict::lob::LobReadError::LengthMismatch { .. }
+                                            )
+                                        ),
+                                        "{name}.{cname}: over-length accepted"
+                                    );
+                                    lob_segment_read += 1;
                                 }
                                 Value::Text { text, invalid, .. } => {
                                     assert_eq!(*invalid, 0);
@@ -1295,6 +1374,10 @@ fn lab_values_match_oracle_dump_byte_for_byte() {
         assert_eq!(
             lob_out_of_line, 4,
             "out-of-line LOBs reported, never guessed"
+        );
+        assert_eq!(
+            lob_segment_read, 4,
+            "out-of-line LOBs assembled from the LOB segment (LV-070)"
         );
     } else {
         assert_eq!(tables_checked, 15, "tables");

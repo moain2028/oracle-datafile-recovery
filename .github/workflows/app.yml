@@ -1,0 +1,114 @@
+name: App
+# Builds the Windows desktop app (ODR.exe + engines + Arabic installer ODR-Setup-<ver>.exe), signs
+# everything, then PROVES it on a real Windows machine: silent install -> the installed app drives
+# its own window through the whole flow (demo files, read tables, extract 18 tables, Arabic preview)
+# and saves screenshots -> uninstall. Artifacts: the Setup, screenshots, autotest.txt, install log.
+on:
+  push:
+    branches: ["lead/**"]
+    paths: ["app/**", ".github/workflows/app.yml"]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  app:
+    runs-on: windows-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GOLDEN_TAG: golden-26ai-20261103
+      GOLDEN_TGZ: odr_golden_26ai_20261103T003005Z.tar.gz
+      ODR_SIGN_PFX_B64: ${{ secrets.ODR_SIGN_PFX_B64 }}
+      ODR_SIGN_PASS: ${{ secrets.ODR_SIGN_PASS }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.99.0"
+      - uses: Swatinem/rust-cache@v2
+      - name: Build engines (odr.exe, odr-corrupt.exe)
+        run: cargo build --release --locked -p odr-cli -p odr-corrupt
+      - name: Build the app (ODR.exe, .NET Framework 4.8 - built into Windows 10/11)
+        run: dotnet build app/windows/ODR.csproj -c Release -nologo
+      - name: Sign executables
+        shell: pwsh
+        run: ./app/windows/sign.ps1 target/release/odr.exe target/release/odr-corrupt.exe app/windows/bin/Release/net48/ODR.exe
+      - name: Assemble installer payload (app, engines, docs, demo datafiles)
+        shell: pwsh
+        run: |
+          $p = "app/windows/installer/payload"
+          New-Item -ItemType Directory -Force "$p/tool", "$p/docs", "$p/demo" | Out-Null
+          Copy-Item app/windows/bin/Release/net48/ODR.exe, app/windows/bin/Release/net48/ODR.exe.config $p/
+          Copy-Item target/release/odr.exe, target/release/odr-corrupt.exe "$p/tool/"
+          Copy-Item LICENSE "$p/LICENSE.txt"
+          Copy-Item LICENSE, THIRD_PARTY_LICENSES.txt, app/windows/docs/README_AR.txt "$p/docs/"
+          Copy-Item docs/field/integrity/ODR-code-signing.cer, docs/field/integrity/SIGNER.txt, docs/field/integrity/trust-certificate.ps1 "$p/docs/"
+          gh release download $env:GOLDEN_TAG -R "${{ github.repository }}" -p $env:GOLDEN_TGZ -p "$env:GOLDEN_TGZ.sha256" -D $env:RUNNER_TEMP
+          $exp = ((Get-Content "$env:RUNNER_TEMP/$env:GOLDEN_TGZ.sha256" -Raw).Trim() -split '\s+')[0].ToLower()
+          $act = (Get-FileHash "$env:RUNNER_TEMP/$env:GOLDEN_TGZ" -Algorithm SHA256).Hash.ToLower()
+          if ($exp -ne $act) { throw "golden sha256 mismatch" }
+          & "$env:SystemRoot\System32\tar.exe" -xzf "$env:RUNNER_TEMP\$env:GOLDEN_TGZ" -C $env:RUNNER_TEMP
+          if ($LASTEXITCODE -ne 0) { throw "tar failed" }
+          Copy-Item "$env:RUNNER_TEMP/20261103T003005Z/datafiles/*.dbf" "$p/demo/"
+          Get-ChildItem -Recurse $p | Select-Object FullName, Length | Format-Table -AutoSize | Out-String -Width 200 | Write-Host
+      - name: Build the installer (Inno Setup 6, Arabic)
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress | Out-Host }
+          if (-not (Test-Path $iscc)) { throw "ISCC.exe not found" }
+          $ver = ([xml](Get-Content app/windows/ODR.csproj)).Project.PropertyGroup.Version
+          "ODR_APP_VERSION=$ver" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+          & $iscc "/DAppVersion=$ver" app/windows/installer/odr.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC failed" }
+          ./app/windows/sign.ps1 "app/windows/installer/Output/ODR-Setup-$ver.exe"
+          $s = "app/windows/installer/Output/ODR-Setup-$ver.exe"
+          (Get-FileHash $s -Algorithm SHA256).Hash.ToLower() + "  ODR-Setup-$ver.exe" | Out-File -Encoding ascii "$s.sha256"
+          Get-Item $s | Format-List Name, Length
+      - name: PROOF - install on this Windows machine, run the app, screenshots, uninstall
+        shell: pwsh
+        run: |
+          $ver = $env:ODR_APP_VERSION
+          $setup = (Resolve-Path "app/windows/installer/Output/ODR-Setup-$ver.exe").Path
+          $proof = New-Item -ItemType Directory -Force "$env:RUNNER_TEMP/proof"
+          $i = Start-Process $setup -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/LOG=`"$proof\install.log`"" -PassThru -Wait
+          if ($i.ExitCode -ne 0) { throw "installer exit code $($i.ExitCode)" }
+          $app = Join-Path $env:LOCALAPPDATA "Programs\ODR"
+          Get-ChildItem -Recurse $app | Select-Object FullName, Length | Format-Table -AutoSize | Out-String -Width 200 | Write-Host
+          $lnk = Get-ChildItem "$env:APPDATA\Microsoft\Windows\Start Menu\Programs" -Filter "ODR*.lnk" -Recurse
+          if (-not $lnk) { throw "Start-menu shortcut missing" }
+          Write-Host "Start menu: $($lnk.FullName)"
+          $s = Get-AuthenticodeSignature "$app\ODR.exe"; Write-Host "ODR.exe signature: $($s.Status) signer $($s.SignerCertificate.Thumbprint)"
+          $p = Start-Process "$app\ODR.exe" -ArgumentList "--autotest", "`"$proof`"" -PassThru
+          if (-not $p.WaitForExit(900000)) { $p.Kill(); throw "app self-test timed out" }
+          Get-Content "$proof\autotest.txt" -Encoding UTF8 | Write-Host
+          if ($p.ExitCode -ne 0) { throw "app self-test failed (exit $($p.ExitCode))" }
+          Remove-Item -Recurse -Force "$proof\out"
+          $u = Start-Process "$app\unins000.exe" -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART" -PassThru -Wait
+          for ($k = 0; $k -lt 60 -and (Test-Path "$app\ODR.exe"); $k++) { Start-Sleep 1 }
+          if (Test-Path "$app\ODR.exe") { throw "uninstall left ODR.exe behind" }
+          Write-Host "uninstall OK: $app removed"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: odr-app-proof
+          path: ${{ runner.temp }}/proof
+      - uses: actions/upload-artifact@v4
+        with:
+          name: odr-setup
+          path: |
+            app/windows/installer/Output/ODR-Setup-*.exe
+            app/windows/installer/Output/ODR-Setup-*.exe.sha256
+          if-no-files-found: error
+      - name: Attach the Setup to the release (tags only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          for ($k = 0; $k -lt 40; $k++) { gh release view $env:GITHUB_REF_NAME -R "${{ github.repository }}" *> $null; if ($LASTEXITCODE -eq 0) { break }; Start-Sleep 30 }
+          gh release upload $env:GITHUB_REF_NAME (Get-ChildItem app/windows/installer/Output/ODR-Setup-*).FullName -R "${{ github.repository }}" --clobber

@@ -1,0 +1,16 @@
+﻿ODR desktop app autotest · C:\Users\runneradmin\AppData\Local\Programs\ODR\ODR.exe · v0.6.0
+PASS  engine odr.exe installed next to the app: C:\Users\runneradmin\AppData\Local\Programs\ODR\tool\odr.exe
+PASS  demo datafiles installed: C:\Users\runneradmin\AppData\Local\Programs\ODR\demo
+PASS  4 demo datafiles added (4)
+PASS  tables read from SYSTEM
+PASS  dictionary issues = 0 (0)
+PASS  18 user tables shown, system tables hidden (18)
+PASS  18 tables extracted (18)
+PASS  all 18 extracted cleanly (exit 0)
+PASS  T_JOURNAL: verified 20000 · inferred 0 · rejected 0 (expected 20000 · 0 · 0)
+PASS  T_LOB_BASIC: verified 6 · inferred 0 · rejected 0 (expected 6 · 0 · 0)
+PASS  T_LOB_SECURE: verified 6 · inferred 0 · rejected 0 (expected 6 · 0 · 0)
+PASS  T_COMPRESS: verified 2000 · inferred 0 · rejected 0 (expected 2000 · 0 · 0)
+PASS  Arabic text 'قيد يومية رقم 7684' present exactly once in T_JOURNAL (1)
+PASS  T_LOB_BASIC inline Arabic CLOB exact
+RESULT: 14 passed, 0 failed

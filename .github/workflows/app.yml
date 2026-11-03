@@ -6,7 +6,6 @@ name: App
 on:
   push:
     branches: ["lead/**"]
-    paths: ["app/**", ".github/workflows/app.yml"]
     tags: ["v*"]
   workflow_dispatch:
 

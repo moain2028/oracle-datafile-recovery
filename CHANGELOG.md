@@ -1,6 +1,11 @@
 # Changelog
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 
+
+## Unreleased
+- Repository renamed `moain2028/new-pro2` → **`moain2028/oracle-datafile-recovery`** (private; GitHub redirects the old name). Scripts, Cargo.toml and docs use the new name.
+- trial.yml: the tamper-drill step resets the exit code after the expected verify failure (#7).
+
 ## 0.5.0-alpha — 2026-11-03
 - **LV-074**: 11.2 LOB locator header `00 54 00 01` accepted; byte 6 bit 0x80 = UCS-2 CLOB data; locator/PROPS$ disagreement rejected. Before: every LOB row of 11g and AR8MSWIN1256 rejected; after: 24/24 LOB values equal Oracle on 5 databases.
 - Golden sets **18c** and **11g AR8MSWIN1256** (140,068 cells, 10,007 Arabic, 0 mismatches); CI `golden` job now runs 26ai, 21c, 11g, 18c, ar8.

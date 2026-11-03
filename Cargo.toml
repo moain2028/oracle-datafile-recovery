@@ -8,7 +8,7 @@ version = "0.5.0"
 edition = "2024"
 rust-version = "1.99"
 license = "LicenseRef-Proprietary"
-repository = "https://github.com/moain2028/new-pro2"
+repository = "https://github.com/moain2028/oracle-datafile-recovery"
 authors = ["moain2028"]
 
 [workspace.dependencies]

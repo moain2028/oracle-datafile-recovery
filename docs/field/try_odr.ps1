@@ -26,7 +26,7 @@ $ErrorActionPreference = "Stop"
 # so 5.1 parses its own Arabic literals correctly.)
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $OutputEncoding = [System.Text.Encoding]::UTF8
-$Repo = "https://github.com/moain2028/new-pro2"
+$Repo = "https://github.com/moain2028/oracle-datafile-recovery"
 $script:Fail = 0
 $script:Pass = 0
 
@@ -42,12 +42,12 @@ function Get-File($url, $out, $tag) {
     $name = Split-Path $out -Leaf
     Write-Host "  downloading $name"
     if (Get-Command gh -ErrorAction SilentlyContinue) {
-        & gh release download $tag -R moain2028/new-pro2 -p $name -O $out 2>$null
+        & gh release download $tag -R moain2028/oracle-datafile-recovery -p $name -O $out 2>$null
         if ($LASTEXITCODE -eq 0 -and (Test-Path $out)) { return }
     }
     if ($env:ODR_TOKEN) {
         $h = @{ Authorization = "Bearer $env:ODR_TOKEN" }
-        $rel = Invoke-RestMethod -Headers $h -Uri "https://api.github.com/repos/moain2028/new-pro2/releases/tags/$tag"
+        $rel = Invoke-RestMethod -Headers $h -Uri "https://api.github.com/repos/moain2028/oracle-datafile-recovery/releases/tags/$tag"
         $asset = $rel.assets | Where-Object name -eq $name | Select-Object -First 1
         if ($asset) {
             $h["Accept"] = "application/octet-stream"

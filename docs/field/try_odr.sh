@@ -10,7 +10,7 @@
 # Needs: curl, tar, sha256sum, python3 (CSV checks), ~700 MB disk.
 set -u
 DIR="${1:-$PWD/odr-trial}"; TAG="${2:-v0.5.0-alpha}"; GOLDEN="golden-26ai-20261103"
-REPO="https://github.com/moain2028/new-pro2"
+REPO="https://github.com/moain2028/oracle-datafile-recovery"
 TGZ="odr_golden_26ai_20261103T003005Z.tar.gz"; TAR="odr-$TAG-x86_64-unknown-linux-gnu.tar.gz"
 PASS=0; FAIL=0
 step() { printf '\n== %s\n' "$1"; }
@@ -21,10 +21,10 @@ check(){ if [ "$1" = 0 ]; then ok "$2"; else bad "$2"; fi; }
 # invited reader) or with ODR_TOKEN=<read token>; otherwise place the files in DIR by hand.
 get()  { [ -f "$2" ] && { echo "  (exists) $2"; return; }; echo "  downloading $(basename "$2")"
          if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
-           gh release download "$3" -R moain2028/new-pro2 -p "$(basename "$2")" -O "$2" 2>/dev/null && return
+           gh release download "$3" -R moain2028/oracle-datafile-recovery -p "$(basename "$2")" -O "$2" 2>/dev/null && return
          fi
          if [ -n "${ODR_TOKEN:-}" ]; then
-           url=$(curl -sS -H "Authorization: Bearer $ODR_TOKEN" "https://api.github.com/repos/moain2028/new-pro2/releases/tags/$3" | grep -o '"url": *"https://api.github.com/repos/[^"]*/assets/[0-9]*"[^}]*"name": *"'"$(basename "$2")"'"' | head -1 | grep -o 'https://api.github.com/repos/[^"]*/assets/[0-9]*')
+           url=$(curl -sS -H "Authorization: Bearer $ODR_TOKEN" "https://api.github.com/repos/moain2028/oracle-datafile-recovery/releases/tags/$3" | grep -o '"url": *"https://api.github.com/repos/[^"]*/assets/[0-9]*"[^}]*"name": *"'"$(basename "$2")"'"' | head -1 | grep -o 'https://api.github.com/repos/[^"]*/assets/[0-9]*')
            [ -n "$url" ] && curl -sSL -H "Authorization: Bearer $ODR_TOKEN" -H "Accept: application/octet-stream" -o "$2" "$url" && return
          fi
          echo "  cannot download $(basename "$2"): private release — run 'gh auth login' as an invited reader, set ODR_TOKEN, or copy the file into $DIR"; exit 1; }

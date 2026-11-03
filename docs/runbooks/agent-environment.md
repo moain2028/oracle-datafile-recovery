@@ -96,7 +96,7 @@ docker start odr-oracle    # لإعادة الاستخدام
 **بديل أسرع:** حمّل المجموعة الجاهزة من GitHub Release (62 MB):
 ```bash
 cd /home/user/webapp/lab && mkdir -p out/golden && cd out/golden
-gh release download golden-26ai-20261103 --repo moain2028/new-pro2 -p '*.tar.gz' -p '*.sha256'
+gh release download golden-26ai-20261103 --repo moain2028/oracle-datafile-recovery -p '*.tar.gz' -p '*.sha256'
 sha256sum -c odr_golden_26ai_20261103T003005Z.tar.gz.sha256 && tar -xzf odr_golden_26ai_20261103T003005Z.tar.gz && ls
 # (the 2026-10 sets lived on the suspended moain2026 account and are gone; 26ai rebuilt 2026-11-03)
 ```
@@ -174,7 +174,7 @@ until docker logs odr-xe11 2>&1 | grep -q "DATABASE IS READY TO USE"; do sleep 1
 - **21c**: `gvenzl/oracle-xe:21-slim`، PDB `XEPDB1`، نفس `lab/sql` بلا تعديل؛ الصورة بلا `find`/`which` ⇒ `ls` و`$ORACLE_HOME/bin/dbv` بالمسار الكامل. SYSTEM = `XE/XEPDB1/system01.dbf`.
 - **11g**: `gvenzl/oracle-xe:11-slim`؛ نسخ SQL في `/tmp` بالتغييرات الأربعة أعلاه **+ حذف قسم `T_COMPRESS`** (ORA-00439). SYSTEM = `XE/system.dbf`. التصدير ≈ 3.5 دقيقة.
 - لكل نسخة: `00_tablespaces` (sysdba) ← `10_corpus` (ODR) ← `20_export_golden` ← `30_block_dumps` ← `SHUTDOWN IMMEDIATE` ← نسخ **الأربعة فقط** + `dbv` ← `SHA256SUMS` ← `tar` ← `gh release create golden-<v>-<date>`.
-- **الاستخدام**: `gh release download golden-{26ai,21c,11g}-20261103 -R moain2028/new-pro2 -p '*.tar.gz' -p '*.sha256'` ثم `ODR_GOLDEN=<26ai> ODR_GOLDEN_V2=<26ai> ODR_GOLDEN2=<21c|11g> cargo test --workspace` (CI: وظيفة `golden`).
+- **الاستخدام**: `gh release download golden-{26ai,21c,11g}-20261103 -R moain2028/oracle-datafile-recovery -p '*.tar.gz' -p '*.sha256'` ثم `ODR_GOLDEN=<26ai> ODR_GOLDEN_V2=<26ai> ODR_GOLDEN2=<21c|11g> cargo test --workspace` (CI: وظيفة `golden`).
 
 ## 8. ملاحظات القرص والحاوية (حالة نهاية الجلسة 2026-10-18)
 - القرص 27/29 GB: `/home/user/docker-data` 24 GB (صورة 10 GB + حجم oradata) · `target/` 1.9 GB. عند الضيق: `cargo clean` أولاً، ثم `docker rm -f odr-oracle && docker volume rm odr-oradata` (المجموعة الذهبية محفوظة في Release).

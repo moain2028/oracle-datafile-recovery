@@ -3,7 +3,7 @@
 ---
 
 You are the **Lead engineer** (sole engineer: manager, coder, reviewer, merger) of
-`moain2028/new-pro2` (moved 2026-11-03 from the suspended `moain2026/oracle-datafile-recovery`) — **ODR, Oracle Datafile Recovery**: a Rust tool that reads
+`moain2028/oracle-datafile-recovery` (moved 2026-11-03 from the suspended `moain2026/oracle-datafile-recovery`) — **ODR, Oracle Datafile Recovery**: a Rust tool that reads
 Oracle `.dbf` datafiles **without an Oracle instance** and extracts tables from healthy or damaged
 files. Working directory: `/home/user/webapp` (clone the repo there if it is empty).
 
@@ -14,7 +14,7 @@ by a documented rule and labelled with the rule), or `rejected` (with a reason).
 never default to NULL, never trust a published source over the real file.
 
 ## Read in this order (≈ 25 minutes) — do not skip
-00. `docs/handover/2026-11-03_session_handover.md` — **the latest state (2026-11-03)**: repo on `moain2028/new-pro2` with full original history; golden sets rebuilt for 26ai/21c/11g (Releases `golden-{26ai,21c,11g}-20261103`); CI job `golden` runs them on every PR; v0.4.0-alpha offline evaluator bundle (`START_HERE.bat`) tested on a real Windows runner by `trial.yml`. **Start here.** The golden download commands below that name `moain2026` and the 2026-10 tags are history — use the 2026-11-03 Releases.
+00. `docs/handover/2026-11-03_session_handover.md` — **the latest state (2026-11-03)**: repo on `moain2028/oracle-datafile-recovery` with full original history; golden sets rebuilt for 26ai/21c/11g (Releases `golden-{26ai,21c,11g}-20261103`); CI job `golden` runs them on every PR; v0.4.0-alpha offline evaluator bundle (`START_HERE.bat`) tested on a real Windows runner by `trial.yml`. **Start here.** The golden download commands below that name `moain2026` and the 2026-10 tags are history — use the 2026-11-03 Releases.
 0. `docs/handover/2026-10-24_session_handover.md` — **the latest state (2026-10-24): PRs #33–#37 merged;
    step g closed (LV-067); LOB inline + out-of-line done (LV-068/070); compression refused (LV-069);
    Release `v0.2.0-alpha` + `docs/field/QUICKSTART_ar.md`; §4 has the measured bytes of a real

@@ -3,14 +3,14 @@
 # quick-start commands and COMPARES every number with what Oracle itself says.
 # Prints PASS/FAIL per step. Never writes to the source datafiles.
 #
-#   powershell -ExecutionPolicy Bypass -File try_odr.ps1 [-Dir C:\odr-trial] [-Tag v0.4.0-alpha]
+#   powershell -ExecutionPolicy Bypass -File try_odr.ps1 [-Dir C:\odr-trial] [-Tag v0.5.0-alpha]
 #
 # Needs: internet, ~700 MB disk (62 MB download, ~480 MB extracted), tar.exe (built into Windows 10+).
 
 [CmdletBinding()]
 param(
     [string]$Dir = (Join-Path $PWD "odr-trial"),
-    [string]$Tag = "v0.4.0-alpha",
+    [string]$Tag = "v0.5.0-alpha",
     [string]$Golden = "golden-26ai-20261103",
     [switch]$SkipDownload,
     # Testing only: use binaries from this directory instead of downloading the Windows zip.

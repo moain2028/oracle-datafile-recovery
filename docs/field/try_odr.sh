@@ -4,12 +4,12 @@
 # commands and COMPARES every number with what Oracle itself says. PASS/FAIL per step.
 # Never writes to the source datafiles.
 #
-#   bash try_odr.sh [DIR] [TAG]          # default DIR=./odr-trial, TAG=v0.4.0-alpha
+#   bash try_odr.sh [DIR] [TAG]          # default DIR=./odr-trial, TAG=v0.5.0-alpha
 #   ODR_TOOLDIR=/path/with/odr bash try_odr.sh DIR   # testing: use local binaries, skip tool download
 #
 # Needs: curl, tar, sha256sum, python3 (CSV checks), ~700 MB disk.
 set -u
-DIR="${1:-$PWD/odr-trial}"; TAG="${2:-v0.4.0-alpha}"; GOLDEN="golden-26ai-20261103"
+DIR="${1:-$PWD/odr-trial}"; TAG="${2:-v0.5.0-alpha}"; GOLDEN="golden-26ai-20261103"
 REPO="https://github.com/moain2028/new-pro2"
 TGZ="odr_golden_26ai_20261103T003005Z.tar.gz"; TAR="odr-$TAG-x86_64-unknown-linux-gnu.tar.gz"
 PASS=0; FAIL=0

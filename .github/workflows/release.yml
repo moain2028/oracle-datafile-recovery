@@ -65,27 +65,17 @@ jobs:
             Write-Host "$e signed: status $($s.Status), signer $($s.SignerCertificate.Thumbprint), timestamped"
           }
           Remove-Item $pfx -Force
-      - name: Package (Windows)
+      - name: Upload signed Windows executables (packaged on Linux, job package-windows)
+        # Git-for-Windows openssl is a native binary and cannot open MSYS paths (/tmp/...):
+        # make_integrity.sh failed silently here in the first v0.5.0 run. Package on Linux instead.
         if: runner.os == 'Windows'
-        shell: pwsh
-        env:
-          ODR_SIGN_PFX_B64: ${{ secrets.ODR_SIGN_PFX_B64 }}
-          ODR_SIGN_PASS: ${{ secrets.ODR_SIGN_PASS }}
-        run: |
-          $v = "${{ github.ref_name }}"; if ($v -eq "") { $v = "dev" }
-          $d = "odr-$v-${{ matrix.target }}"
-          New-Item -ItemType Directory -Force $d | Out-Null
-          Copy-Item target/${{ matrix.target }}/release/odr.exe $d/
-          Copy-Item target/${{ matrix.target }}/release/odr-corrupt.exe $d/
-          Copy-Item LICENSE $d/
-          Copy-Item docs/field/README_TRIAL.md $d/README.md
-          Copy-Item docs/field/QUICKSTART_ar.md, docs/field/TRIAL_KIT_ar.md, docs/field/try_odr.ps1, docs/field/try_odr.sh, THIRD_PARTY_LICENSES.txt $d/
-          & bash tools/make_integrity.sh $d $v
-          if ($LASTEXITCODE -ne 0) { throw "integrity folder failed" }
-          & powershell -NoProfile -ExecutionPolicy Bypass -File "$d/integrity/verify.ps1"
-          if ($LASTEXITCODE -ne 0) { throw "verify.ps1 failed on the package" }
-          Compress-Archive -Path $d -DestinationPath "$d.zip"
-          (Get-FileHash "$d.zip" -Algorithm SHA256).Hash.ToLower() + "  $d.zip" | Out-File -Encoding ascii "$d.zip.sha256"
+        uses: actions/upload-artifact@v4
+        with:
+          name: win-signed-exe
+          path: |
+            target/${{ matrix.target }}/release/odr.exe
+            target/${{ matrix.target }}/release/odr-corrupt.exe
+          if-no-files-found: error
       - name: Package (Linux)
         if: runner.os == 'Linux'
         env:
@@ -103,20 +93,51 @@ jobs:
           tar -czf "$d.tar.gz" "$d"
           sha256sum "$d.tar.gz" > "$d.tar.gz.sha256"
       - uses: actions/upload-artifact@v4
+        if: runner.os == 'Linux'
         with:
           name: odr-${{ matrix.target }}
           path: |
-            odr-*.zip
-            odr-*.zip.sha256
             odr-*.tar.gz
             odr-*.tar.gz.sha256
+          if-no-files-found: error
+
+  package-windows:
+    # Windows zip = the executables signed on the Windows runner + docs + integrity/ (built here).
+    needs: build
+    runs-on: ubuntu-latest
+    env:
+      ODR_SIGN_PFX_B64: ${{ secrets.ODR_SIGN_PFX_B64 }}
+      ODR_SIGN_PASS: ${{ secrets.ODR_SIGN_PASS }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: win-signed-exe
+          path: exe
+      - name: Package (Windows zip, integrity folder)
+        run: |
+          v="${{ github.ref_name }}"; [ -z "$v" ] && v=dev
+          d="odr-$v-x86_64-pc-windows-msvc"
+          mkdir -p "$d"
+          cp exe/odr.exe exe/odr-corrupt.exe LICENSE THIRD_PARTY_LICENSES.txt "$d/"
+          cp docs/field/README_TRIAL.md "$d/README.md"
+          cp docs/field/QUICKSTART_ar.md docs/field/TRIAL_KIT_ar.md docs/field/try_odr.ps1 docs/field/try_odr.sh "$d/"
+          bash tools/make_integrity.sh "$d" "$v"
+          zip -r -q "$d.zip" "$d"
+          sha256sum "$d.zip" > "$d.zip.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: odr-x86_64-pc-windows-msvc
+          path: |
+            odr-*.zip
+            odr-*.zip.sha256
           if-no-files-found: error
 
   bundle:
     # Offline evaluator bundle: one zip with the Windows tool, the golden datafiles,
     # the self-check script and START_HERE.bat. The evaluator needs no internet,
     # no GitHub account and no token. trial.yml runs it on a real Windows runner.
-    needs: build
+    needs: package-windows
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
@@ -158,7 +179,7 @@ jobs:
           if-no-files-found: error
 
   publish:
-    needs: [build, bundle]
+    needs: [build, package-windows, bundle]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:

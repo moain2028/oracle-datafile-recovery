@@ -75,8 +75,50 @@ jobs:
             odr-*.tar.gz.sha256
           if-no-files-found: error
 
-  publish:
+  bundle:
+    # Offline evaluator bundle: one zip with the Windows tool, the golden datafiles,
+    # the self-check script and START_HERE.bat. The evaluator needs no internet,
+    # no GitHub account and no token. trial.yml runs it on a real Windows runner.
     needs: build
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GOLDEN_TAG: golden-26ai-20261103
+      GOLDEN_TGZ: odr_golden_26ai_20261103T003005Z.tar.gz
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: odr-x86_64-pc-windows-msvc
+          path: win
+      - name: Assemble offline evaluator bundle
+        shell: bash
+        run: |
+          v="${{ github.ref_name }}"; [ -z "$v" ] && v=dev
+          b="odr-$v-windows-trial-bundle"
+          mkdir -p "$b"
+          cp win/odr-*.zip win/odr-*.zip.sha256 "$b/"
+          gh release download "$GOLDEN_TAG" -R "${{ github.repository }}" -p "$GOLDEN_TGZ" -p "$GOLDEN_TGZ.sha256" -D "$b"
+          # The Windows .sha256 is written by PowerShell (CRLF): compare hashes, not sha256sum -c.
+          for f in "$b/$GOLDEN_TGZ" "$b"/odr-*-pc-windows-msvc.zip; do
+            exp=$(tr -d '\r' < "$f.sha256" | awk '{print tolower($1)}'); act=$(sha256sum "$f" | awk '{print $1}')
+            [ "$exp" = "$act" ] || { echo "sha256 mismatch: $f"; exit 1; }; echo "sha256 ok: $f"
+          done
+          cp docs/field/try_odr.ps1 docs/field/QUICKSTART_ar.md docs/field/bundle/README_AR.txt LICENSE "$b/"
+          sed "s|@TAG@|$v|g" docs/field/bundle/START_HERE.bat > "$b/START_HERE.bat"
+          ls -la "$b"
+          zip -r -q "$b.zip" "$b"
+          sha256sum "$b.zip" > "$b.zip.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: odr-bundle
+          path: |
+            odr-*-windows-trial-bundle.zip
+            odr-*-windows-trial-bundle.zip.sha256
+          if-no-files-found: error
+
+  publish:
+    needs: [build, bundle]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
@@ -92,5 +134,5 @@ jobs:
           gh release create "${{ github.ref_name }}" dist/* \
             --repo "${{ github.repository }}" \
             --title "ODR ${{ github.ref_name }}" \
-            --notes "Built by CI from $GITHUB_SHA. Verify: sha256sum -c *.sha256. See TRIAL_KIT_ar.md inside the archive." \
+            --notes "Built by CI from $GITHUB_SHA. Evaluators: download odr-${{ github.ref_name }}-windows-trial-bundle.zip (offline, everything included), unzip, double-click START_HERE.bat. Verify: sha256sum -c *.sha256." \
             || gh release upload "${{ github.ref_name }}" dist/* --repo "${{ github.repository }}" --clobber

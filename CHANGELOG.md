@@ -2,6 +2,16 @@
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 ## [Unreleased]
 
+## [0.4.0-alpha] - 2026-11-03
+### Added
+- **Golden sets for 21c and 11g rebuilt from scratch** and published as private Releases: `golden-21c-20261103` (gvenzl/oracle-xe:21-slim, 18 tables, 147,661 truth values) and `golden-11g-20261103` (gvenzl/oracle-xe:11-slim, non-CDB, 17 tables, 141,661 values — 11g XE refuses `COMPRESS BASIC` with ORA-00439, so `T_COMPRESS` is absent; the non-CDB SQL copies are stored in the set's `meta/*.sql`). `dbv`: 0 corrupt pages on all 8 datafiles. Measured: `lab2_second_version_reads_like_oracle` passes on both; scavenge hold-out (tuned on 26ai only) **21c 53 named / 6 abstain / 0 wrong, 11g 50 / 9 / 0**.
+- **CI job `golden`**: downloads the three golden Releases, verifies every SHA-256, and runs the whole workspace test suite with `ODR_GOLDEN`/`ODR_GOLDEN_V2` = 26ai and `ODR_GOLDEN2` = 21c, then the version-agnostic tests again with 11g. Until now every golden test returned early in CI (no `ODR_GOLDEN`), so a green CI said nothing about Oracle data.
+- **Offline evaluator bundle** `odr-<tag>-windows-trial-bundle.zip` (release job `bundle`): Windows tool archive + golden 26ai + `try_odr.ps1` + `START_HERE.bat` + `README_AR.txt` + `QUICKSTART_ar.md` + `LICENSE`, with SHA-256. The evaluator unzips and double-clicks `START_HERE.bat` — no internet, no GitHub account, no token; result `RESULT: 33 passed, 0 failed` and a full log in `odr-trial-log.txt`. `trial.yml` job `bundle-windows` unzips the published bundle and runs `START_HERE.bat` on a real Windows runner with no token in the environment.
+- `try_odr.ps1 -LogFile` (transcript) and `Unblock-File` on the extracted tool (no zone-identifier prompts).
+### Changed
+- `lab2_second_version_reads_like_oracle` asserts the table count Oracle wrote in `rowcounts.txt` (≥ 15) instead of a hard-coded 15 — the corpus has 18 tables since M5 (17 on 11g XE).
+- STATUS (M0/M2/M3/M4/M5 updated with the measured numbers), README, AGENTS, TRIAL_KIT, QUICKSTART, runbook, NEXT_AGENT_PROMPT; new handover `docs/handover/2026-11-03_session_handover.md`.
+
 ## [0.3.1-alpha] - 2026-11-03
 ### Fixed
 - **`try_odr.ps1` on real Windows PowerShell 5.1**: the first run of the new `trial.yml` on a `windows-latest` runner against the published `v0.3.0-alpha` gave 32 PASS / 1 FAIL. The tool's output was correct (row 6 rejected alone, reason `Integrity { rdba: 67112724, status: ChecksumFail } (LV-070)`); the *check* failed because Windows PowerShell 5.1 returns a single `PSCustomObject` — with no `.Count` — when `Import-Csv` reads a one-row CSV, so `$rej.Count -eq 1` was false. pwsh 7 (used for the local run) returns a collection, which is why 32/32 locally did not catch it. Every `Import-Csv` result is now wrapped in `@(...)`. `v0.3.0-alpha` ships the old script and is superseded; binaries are unchanged in behaviour.

@@ -31,11 +31,13 @@ Download `odr-<ver>-x86_64-pc-windows-msvc.zip` or the Linux tarball from **Rele
 | `lab/` | Oracle 26ai Free lab: corpus SQL, golden export, `odr-corrupt` recipes (`lab/out/` is never committed) |
 | `fuzz/` | 12 cargo-fuzz targets (nightly); CI runs a smoke pass |
 
-## Status (2026-10-18, after PR #21)
+## Status (2026-11-03, v0.4.0-alpha)
 
-ODR reads **real Oracle 26ai datafiles end-to-end** with no instance: `odr dict` resolves a full PDB dictionary (71,849 objects, 2,560 tables, **0 issues**) in 3.8 s; `odr extract` writes any heap/cluster table in three layers — `verified.csv` / `inferred.csv` / `rejected.csv` + `report.json` (SHA-256 of every input). Golden proof: 141,581 values byte-identical to Oracle `DUMP`, 15/15 tables match Oracle ROWIDs, and under deterministic damage (`odr-corrupt`: zeroed, bit-rot, holes, torn) **precision of the verified layer is 1.000**. 67 binary facts tracked in `docs/design/lab-verify.md` (22 confirmed on real files). CI green on Windows + Linux + licences + fuzz.
+Repository moved to **`moain2028/new-pro2`** (private, ADR-0007) with its full original history. ODR reads real Oracle **26ai, 21c and 11g** datafiles end-to-end with no instance. The three golden sets were rebuilt from `lab/` on 2026-11-03 and live in private Releases (`golden-26ai-20261103`, `golden-21c-20261103`, `golden-11g-20261103`); the CI job `golden` runs every golden test against all three on each PR. Measured: 26ai **147,661/147,661** values byte-identical to Oracle; dictionary 0 issues on all three versions; dictionary-less type inference 0 wrong on the 21c/11g hold-outs; **0 wrong verified rows** under bitrot / torn / zero / swap / ransom / wiped header (forge inside a value with recomputed checksum: 0.16 %, declared limit).
 
-**Start here if you are a new agent:** `docs/handover/NEXT_AGENT_PROMPT.md` → `docs/handover/2026-10-18_final_handover.md` → `docs/runbooks/agent-environment.md`.
+**Evaluators:** from Releases download `odr-<tag>-windows-trial-bundle.zip`, unzip, double-click `START_HERE.bat` — offline, 33 self-checks; the same bundle is run on a real Windows runner by `trial.yml` before every hand-over.
+
+**New agent:** `docs/handover/2026-11-03_session_handover.md` → `docs/handover/NEXT_AGENT_PROMPT.md` → `docs/runbooks/agent-environment.md`.
 
 ```
 cargo build --release -p odr-cli

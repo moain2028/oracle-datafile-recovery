@@ -169,6 +169,13 @@ until docker logs odr-xe11 2>&1 | grep -q "DATABASE IS READY TO USE"; do sleep 1
 - بعد `SHUTDOWN IMMEDIATE` للتصدير لا تعيد صور gvenzl تشغيل القاعدة: `docker restart odr-xe11`.
 - النتيجة: نفس الكود بلا تغيير — `odr dict` 0 مشاكل، `lab2_second_version_reads_like_oracle` يمر مع `ODR_GOLDEN2=<11g>`.
 
+## 7c. إعادة بناء المجموعات الثلاث (نُفِّذ 2026-11-03 — الأوامر الفعلية)
+- **26ai**: §3–§4 كما هي (الصورة 9.9 GB؛ احذفها بعد التصدير: `docker rmi container-registry.oracle.com/database/free:23.26.0.0`).
+- **21c**: `gvenzl/oracle-xe:21-slim`، PDB `XEPDB1`، نفس `lab/sql` بلا تعديل؛ الصورة بلا `find`/`which` ⇒ `ls` و`$ORACLE_HOME/bin/dbv` بالمسار الكامل. SYSTEM = `XE/XEPDB1/system01.dbf`.
+- **11g**: `gvenzl/oracle-xe:11-slim`؛ نسخ SQL في `/tmp` بالتغييرات الأربعة أعلاه **+ حذف قسم `T_COMPRESS`** (ORA-00439). SYSTEM = `XE/system.dbf`. التصدير ≈ 3.5 دقيقة.
+- لكل نسخة: `00_tablespaces` (sysdba) ← `10_corpus` (ODR) ← `20_export_golden` ← `30_block_dumps` ← `SHUTDOWN IMMEDIATE` ← نسخ **الأربعة فقط** + `dbv` ← `SHA256SUMS` ← `tar` ← `gh release create golden-<v>-<date>`.
+- **الاستخدام**: `gh release download golden-{26ai,21c,11g}-20261103 -R moain2028/new-pro2 -p '*.tar.gz' -p '*.sha256'` ثم `ODR_GOLDEN=<26ai> ODR_GOLDEN_V2=<26ai> ODR_GOLDEN2=<21c|11g> cargo test --workspace` (CI: وظيفة `golden`).
+
 ## 8. ملاحظات القرص والحاوية (حالة نهاية الجلسة 2026-10-18)
 - القرص 27/29 GB: `/home/user/docker-data` 24 GB (صورة 10 GB + حجم oradata) · `target/` 1.9 GB. عند الضيق: `cargo clean` أولاً، ثم `docker rm -f odr-oracle && docker volume rm odr-oradata` (المجموعة الذهبية محفوظة في Release).
 - بعد `SHUTDOWN IMMEDIATE` للتصدير تبقى الحاوية `unhealthy`: `docker restart odr-oracle` ثم انتظر `healthy` (≈ 3 دقائق).

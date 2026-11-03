@@ -3,19 +3,22 @@
 # quick-start commands and COMPARES every number with what Oracle itself says.
 # Prints PASS/FAIL per step. Never writes to the source datafiles.
 #
-#   powershell -ExecutionPolicy Bypass -File try_odr.ps1 [-Dir C:\odr-trial] [-Tag v0.3.1-alpha]
+#   powershell -ExecutionPolicy Bypass -File try_odr.ps1 [-Dir C:\odr-trial] [-Tag v0.4.0-alpha]
 #
 # Needs: internet, ~700 MB disk (62 MB download, ~480 MB extracted), tar.exe (built into Windows 10+).
 
 [CmdletBinding()]
 param(
     [string]$Dir = (Join-Path $PWD "odr-trial"),
-    [string]$Tag = "v0.3.1-alpha",
+    [string]$Tag = "v0.4.0-alpha",
     [string]$Golden = "golden-26ai-20261103",
     [switch]$SkipDownload,
     # Testing only: use binaries from this directory instead of downloading the Windows zip.
-    [string]$ToolDir = ""
+    [string]$ToolDir = "",
+    # Write a full transcript here (the offline bundle's START_HERE.bat uses odr-trial-log.txt).
+    [string]$LogFile = ""
 )
+if ($LogFile -ne "") { Start-Transcript -Path $LogFile -Force | Out-Null }
 
 $ErrorActionPreference = "Stop"
 # Windows PowerShell 5.1 decodes native output with the OEM code page and reads files as ANSI;
@@ -106,6 +109,8 @@ $Exe = if ($IsWindows -or $null -eq $IsWindows) { ".exe" } else { "" }
 if ($ToolDir -eq "") {
     $ToolDir = Join-Path $Dir "odr-$Tag-x86_64-pc-windows-msvc"
     if (-not (Test-Path (Join-Path $ToolDir "odr.exe"))) { Expand-Archive $Zip -DestinationPath $Dir -Force }
+    # Files extracted from a downloaded zip carry the internet zone mark; clear it so odr.exe runs quietly.
+    if (Get-Command Unblock-File -ErrorAction SilentlyContinue) { Get-ChildItem $ToolDir -File | Unblock-File -ErrorAction SilentlyContinue }
 }
 $Odr = Join-Path $ToolDir "odr$Exe"
 $Corrupt = Join-Path $ToolDir "odr-corrupt$Exe"
@@ -204,4 +209,5 @@ Write-Host "================================================================"
 Write-Host ("RESULT: {0} passed, {1} failed" -f $script:Pass, $script:Fail) -ForegroundColor ($(if ($script:Fail -eq 0) { "Green" } else { "Red" }))
 Write-Host "Outputs in $Dir/out/*  (verified.csv / inferred.csv / rejected.csv / report.json)"
 Write-Host "Next: read QUICKSTART_ar.md, then try your own damaged .dbf: odr.exe extract <SYSTEM.dbf> <your.dbf> --table OWNER.TABLE --out out/mine"
+if ($LogFile -ne "") { Stop-Transcript | Out-Null }
 exit $(if ($script:Fail -eq 0) { 0 } else { 1 })

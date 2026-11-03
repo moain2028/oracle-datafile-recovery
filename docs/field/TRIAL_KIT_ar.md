@@ -30,9 +30,11 @@
 
 | Release | الإصدار | ملف SYSTEM | ملفات الجداول |
 |---|---|---|---|
-| **`golden-26ai-20261103`** (الحالية) | Oracle AI Database 26ai Free (23.26) | `FREE_FREEPDB1_system01.dbf` (ملف 12، bigfile) | `odr_odr_assm01/mssm01/big01.dbf` (16/17/18) — 18 جدولاً **منها LOB وضغط**: `T_LOB_BASIC`، `T_LOB_SECURE`، `T_COMPRESS` — 147,661 قيمة |
+| **`golden-26ai-20261103`** (الأساسية) | Oracle AI Database 26ai Free (23.26) | `FREE_FREEPDB1_system01.dbf` (ملف 12، bigfile) | `odr_odr_assm01/mssm01/big01.dbf` (16/17/18) — 18 جدولاً **منها LOB وضغط**: `T_LOB_BASIC`، `T_LOB_SECURE`، `T_COMPRESS` — 147,661 قيمة |
+| `golden-21c-20261103` | Oracle 21c XE (21.3) | `XE_XEPDB1_system01.dbf` | `odr_odr_assm01/mssm01/big01.dbf` — 18 جدولاً، 147,661 قيمة |
+| `golden-11g-20261103` | Oracle 11g XE (11.2, non-CDB) | `XE_system.dbf` (ملف 1) | `odr_odr_assm01/mssm01/big01.dbf` — 17 جدولاً (11g XE يرفض `COMPRESS BASIC`: ORA-00439)، 141,661 قيمة |
 
-> المجموعات القديمة (`golden-26ai-20261018`، `golden-26ai-20261024`، `golden-21c-20261021`، `golden-11g-20261021`) كانت على الحساب السابق وفُقدت معه. أُعيد بناء 26ai من الصفر في 2026-11-03 بنفس الصورة ونفس سكربتات `lab/`؛ 21c و11g لم يُعَد بناؤهما بعد.
+> المجموعات القديمة (`golden-26ai-20261018`، `golden-26ai-20261024`، `golden-21c-20261021`، `golden-11g-20261021`) كانت على الحساب السابق وفُقدت معه. أُعيد بناء الثلاث من الصفر في 2026-11-03 بنفس سكربتات `lab/`، وكلها في Releases خاصة على المستودع، ويختبرها CI على كل PR (وظيفة `golden`).
 
 داخل كل مجموعة: `datafiles/` (النسخ السليمة بعد `SHUTDOWN IMMEDIATE`، `dbv` نظيف)، `rows.psv` (كل قيمة كما طبعها أوراكل بـ `DUMP`)، `meta/rowids.psv` (ROWID كل صف)، `meta/rowcounts.txt`، تفريغات كتل (`traces/`).
 

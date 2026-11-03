@@ -1,24 +1,29 @@
-# try_odr.ps1 — ODR self-checking trial, Windows PowerShell 5.1+ / pwsh 7.
+﻿# try_odr.ps1 — ODR self-checking trial, Windows PowerShell 5.1+ / pwsh 7.
 # One file. It downloads the tool + the test datafiles, verifies SHA-256, runs the
 # quick-start commands and COMPARES every number with what Oracle itself says.
 # Prints PASS/FAIL per step. Never writes to the source datafiles.
 #
-#   powershell -ExecutionPolicy Bypass -File try_odr.ps1 [-Dir C:\odr-trial] [-Tag v0.2.0-alpha]
+#   powershell -ExecutionPolicy Bypass -File try_odr.ps1 [-Dir C:\odr-trial] [-Tag v0.3.0-alpha]
 #
 # Needs: internet, ~700 MB disk (62 MB download, ~480 MB extracted), tar.exe (built into Windows 10+).
 
 [CmdletBinding()]
 param(
     [string]$Dir = (Join-Path $PWD "odr-trial"),
-    [string]$Tag = "v0.2.0-alpha",
-    [string]$Golden = "golden-26ai-20261024",
+    [string]$Tag = "v0.3.0-alpha",
+    [string]$Golden = "golden-26ai-20261103",
     [switch]$SkipDownload,
     # Testing only: use binaries from this directory instead of downloading the Windows zip.
     [string]$ToolDir = ""
 )
 
 $ErrorActionPreference = "Stop"
-$Repo = "https://github.com/moain2026/oracle-datafile-recovery"
+# Windows PowerShell 5.1 decodes native output with the OEM code page and reads files as ANSI;
+# odr prints UTF-8 (Arabic text, the · separator). Force UTF-8 both ways. (This file is saved with a BOM
+# so 5.1 parses its own Arabic literals correctly.)
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$OutputEncoding = [System.Text.Encoding]::UTF8
+$Repo = "https://github.com/moain2028/new-pro2"
 $script:Fail = 0
 $script:Pass = 0
 
@@ -34,12 +39,12 @@ function Get-File($url, $out, $tag) {
     $name = Split-Path $out -Leaf
     Write-Host "  downloading $name"
     if (Get-Command gh -ErrorAction SilentlyContinue) {
-        & gh release download $tag -R moain2026/oracle-datafile-recovery -p $name -O $out 2>$null
+        & gh release download $tag -R moain2028/new-pro2 -p $name -O $out 2>$null
         if ($LASTEXITCODE -eq 0 -and (Test-Path $out)) { return }
     }
     if ($env:ODR_TOKEN) {
         $h = @{ Authorization = "Bearer $env:ODR_TOKEN" }
-        $rel = Invoke-RestMethod -Headers $h -Uri "https://api.github.com/repos/moain2026/oracle-datafile-recovery/releases/tags/$tag"
+        $rel = Invoke-RestMethod -Headers $h -Uri "https://api.github.com/repos/moain2028/new-pro2/releases/tags/$tag"
         $asset = $rel.assets | Where-Object name -eq $name | Select-Object -First 1
         if ($asset) {
             $h["Accept"] = "application/octet-stream"
@@ -62,7 +67,7 @@ function Run-Extract($argv, $outDir) {
     $out = & $Odr extract @argv --out $outDir 2>&1
     $code = $LASTEXITCODE
     $line = ($out | Where-Object { $_ -match 'verified \d+' } | Select-Object -Last 1)
-    $m = [regex]::Match("$line", 'verified (\d+) · inferred (\d+) · rejected (\d+)')
+    $m = [regex]::Match("$line", 'verified (\d+)\D+inferred (\d+)\D+rejected (\d+)')
     [pscustomobject]@{
         Code = $code
         Verified = if ($m.Success) { [int]$m.Groups[1].Value } else { -1 }
@@ -85,17 +90,17 @@ Write-Host "ODR trial in $Dir  (tool $Tag, datafiles $Golden)"
 # ---------------------------------------------------------------- 1. download + verify
 Step "1. Download and verify (SHA-256)"
 $Zip = "odr-$Tag-x86_64-pc-windows-msvc.zip"
-$Tgz = "odr_golden_26ai_v2_20261024T085903Z.tar.gz"
+$Tgz = "odr_golden_26ai_20261103T003005Z.tar.gz"
 if (-not $SkipDownload) {
     if ($ToolDir -eq "") {
         Get-File "$Repo/releases/download/$Tag/$Zip"        $Zip        $Tag
         Get-File "$Repo/releases/download/$Tag/$Zip.sha256" "$Zip.sha256" $Tag
     }
     Get-File "$Repo/releases/download/$Golden/$Tgz"          $Tgz "$Golden"
-    Get-File "$Repo/releases/download/$Golden/odr_golden_26ai_v2.sha256" "odr_golden_26ai_v2.sha256" $Golden
+    Get-File "$Repo/releases/download/$Golden/odr_golden_26ai_20261103T003005Z.tar.gz.sha256" "odr_golden_26ai_20261103T003005Z.tar.gz.sha256" $Golden
 }
 if ($ToolDir -eq "") { Verify-Sha $Zip "$Zip.sha256" }
-Verify-Sha $Tgz "odr_golden_26ai_v2.sha256"
+Verify-Sha $Tgz "odr_golden_26ai_20261103T003005Z.tar.gz.sha256"
 
 $Exe = if ($IsWindows -or $null -eq $IsWindows) { ".exe" } else { "" }
 if ($ToolDir -eq "") {
@@ -104,12 +109,12 @@ if ($ToolDir -eq "") {
 }
 $Odr = Join-Path $ToolDir "odr$Exe"
 $Corrupt = Join-Path $ToolDir "odr-corrupt$Exe"
-if (-not (Test-Path (Join-Path $Dir "20261024T085903Z/datafiles/odr_odr_assm01.dbf"))) {
+if (-not (Test-Path (Join-Path $Dir "20261103T003005Z/datafiles/odr_odr_assm01.dbf"))) {
     Write-Host "  extracting $Tgz (≈ 480 MB)"
     & tar -xzf $Tgz
     if ($LASTEXITCODE -ne 0) { throw "tar failed" }
 }
-$G = Join-Path $Dir "20261024T085903Z/datafiles"
+$G = Join-Path $Dir "20261103T003005Z/datafiles"
 $S = Join-Path $G "FREE_FREEPDB1_system01.dbf"
 $A = Join-Path $G "odr_odr_assm01.dbf"
 $ver = (& $Odr --version) -join ""
@@ -132,7 +137,7 @@ Check ($dictText -match 'AL32UTF8') "database charset AL32UTF8 read from PROPS\$
 Step "3. Clean extraction — 20,000 Arabic journal rows"
 $j = Run-Extract @($S, $A, "--table", "ODR.T_JOURNAL") "out/journal"
 Expect-Layers $j 20000 0 0 0 "T_JOURNAL"
-$rows = Get-Content "out/journal/verified.csv"
+$rows = Get-Content "out/journal/verified.csv" -Encoding UTF8
 Check ($rows.Count -eq 20001) "verified.csv has 20,000 rows + header"
 Check (($rows | Select-String -SimpleMatch 'قيد يومية رقم 7684').Count -eq 1) "Arabic text 'قيد يومية رقم 7684' present exactly once"
 
@@ -141,7 +146,7 @@ Step "4. CLOB/BLOB inline + out-of-line (BasicFile and SecureFile)"
 foreach ($t in "T_LOB_BASIC", "T_LOB_SECURE") {
     $r = Run-Extract @($S, $A, "--table", "ODR.$t") "out/$t"
     Expect-Layers $r 6 0 0 0 $t
-    $csv = Import-Csv "out/$t/verified.csv"
+    $csv = Import-Csv "out/$t/verified.csv" -Encoding UTF8
     $row6 = $csv | Where-Object { $_.ID -eq "6" }
     Check ($row6.C.Length -eq 6000 -and ($row6.C -replace 'L', '') -eq '') "$t row 6 CLOB = 6000 × 'L' (assembled from LOB segment)"
     Check ($row6.B.Length -eq 12000 -and ($row6.B -replace '4D', '') -eq '') "$t row 6 BLOB = 6000 × 0x4D"
@@ -157,22 +162,22 @@ New-Item -ItemType Directory -Force dmg | Out-Null
 & $Corrupt --input $A --output dmg/bitrot.dbf --block-size 8192 --seed 7 --op bitrot:400 | Out-Null
 Check ($LASTEXITCODE -eq 0) "odr-corrupt bitrot:400 seed 7"
 $b = Run-Extract @($S, "dmg/bitrot.dbf", "--table", "ODR.T_JOURNAL") "out/bitrot"
-Expect-Layers $b 18744 0 1256 2 "bitrot → T_JOURNAL"
-$clean = [System.Collections.Generic.HashSet[string]]::new([string[]](Get-Content "out/journal/verified.csv"))
-$wrong = @(Get-Content "out/bitrot/verified.csv" | Where-Object { -not $clean.Contains($_) })
+Expect-Layers $b 18737 0 1263 2 "bitrot → T_JOURNAL"
+$clean = [System.Collections.Generic.HashSet[string]]::new([string[]](Get-Content "out/journal/verified.csv" -Encoding UTF8))
+$wrong = @(Get-Content "out/bitrot/verified.csv" -Encoding UTF8 | Where-Object { -not $clean.Contains($_) })
 Check ($wrong.Count -eq 0) "verified rows from the damaged file that are NOT in the clean output: $($wrong.Count) (must be 0)"
-$reasons = Import-Csv "out/bitrot/rejected.csv" | Group-Object _reason | Sort-Object Count -Descending
+$reasons = Import-Csv "out/bitrot/rejected.csv" -Encoding UTF8 | Group-Object _reason | Sort-Object Count -Descending
 Check ($reasons[0].Name -eq 'block integrity: ChecksumFail') "rejection reason = '$($reasons[0].Name)' ($($reasons[0].Count) rows)"
 
-& $Corrupt --input $A --output dmg/lobchunk.dbf --block-size 8192 --seed 7 --op bitrot:1 --blocks 3935:3935 | Out-Null
+& $Corrupt --input $A --output dmg/lobchunk.dbf --block-size 8192 --seed 7 --op bitrot:1 --blocks 3860:3860 | Out-Null
 $l = Run-Extract @($S, "dmg/lobchunk.dbf", "--table", "ODR.T_LOB_BASIC") "out/lobchunk"
-Expect-Layers $l 5 0 1 2 "1 flipped bit in LOB chunk block 3935 → T_LOB_BASIC"
-$rej = Import-Csv "out/lobchunk/rejected.csv"
+Expect-Layers $l 5 0 1 2 "1 flipped bit in LOB chunk block 3860 → T_LOB_BASIC"
+$rej = Import-Csv "out/lobchunk/rejected.csv" -Encoding UTF8
 Check ($rej.Count -eq 1 -and $rej[0].ID -eq "6" -and $rej[0]._reason -match 'LOB out of line could not be assembled: Integrity .*ChecksumFail.*LV-070') `
     "only row 6 rejected, reason: $($rej[0]._reason)"
 
 # ---------------------------------------------------------------- 6. explicit refusal
-Step "6. Compressed table (COMPRESS BASIC): v0.2.0-alpha refuses it, later builds decode it (LV-071)"
+Step "6. Compressed table (COMPRESS BASIC): v0.2.0-alpha refused it, v0.3.0-alpha decodes it (LV-071)"
 $c = & $Odr extract $S $A --table ODR.T_COMPRESS --out out/compress 2>&1
 $code = $LASTEXITCODE
 if ($code -eq 1) {
@@ -182,7 +187,7 @@ if ($code -eq 1) {
 } else {
     $r = Run-Extract @($S, $A, "--table", "ODR.T_COMPRESS") "out/compress"
     Expect-Layers $r 2000 0 0 0 "T_COMPRESS decoded through the symbol table (LV-071)"
-    $csv = Import-Csv "out/compress/verified.csv"
+    $csv = Import-Csv "out/compress/verified.csv" -Encoding UTF8
     $bad = @($csv | Where-Object { $_.V -ne ("repeated value " + ([int]$_.ID % 5)) -or [int]$_.N -ne ([int]$_.ID % 7) })
     Check ($bad.Count -eq 0) "every decoded row equals the generating formula (V = 'repeated value ' + ID mod 5, N = ID mod 7): $($bad.Count) wrong"
 }

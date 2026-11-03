@@ -1,7 +1,19 @@
 # Changelog
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 ## [Unreleased]
+
+## [0.3.0-alpha] - 2026-11-03
 ### Fixed
+- **Evaluator trial kit pointed at the dead account.** `try_odr.sh` / `try_odr.ps1` downloaded from `moain2026/oracle-datafile-recovery` (suspended, 404) and expected the lost `golden-26ai-20261024` set — any evaluator run would have stopped at step 1. Now: repository `moain2028/new-pro2`, golden `golden-26ai-20261103`, default tool tag `v0.3.0-alpha`, and every expected number re-measured on the rebuilt set (bitrot:400 seed 7 → 18,737 / 0 / 1,263; LOB chunk damage block 3860, rdba 67112724). `try_odr.sh` measured 32/32 on the local release build before tagging.
+- `QUICKSTART_ar.md` / `TRIAL_KIT_ar.md`: same re-measurement; the damage table (bitrot, torn, zero, swap, ransom, wiped header, forge) re-measured row by row on the rebuilt set — 0 wrong verified rows everywhere except forge (32 / 20,000 = 0.16 %, declared limit). Lost 2026-10 golden sets listed as lost; 21c/11g not rebuilt yet.
+- `release.yml`: owner patch applied (ADR-0007) — archives ship `README_TRIAL.md` (as `README.md`), `QUICKSTART_ar.md`, `TRIAL_KIT_ar.md`, `try_odr.ps1`, `try_odr.sh`, `LICENSE`; no longer `CHANGELOG.md`/repo `README.md`.
+- `Cargo.toml` repository, `CODEOWNERS`, runbook download command → `moain2028/new-pro2`.
+### Added
+- `.github/workflows/trial.yml`: after every successful Release (or by hand), runs `try_odr.ps1` under **Windows PowerShell 5.1 on a real Windows runner** and `try_odr.sh` on Linux, against the **published** archives downloaded from Releases — the evaluator's exact path, closing the "ps1 never run on real Windows" limit.
+### Changed
+- Version 0.3.0 (includes BASIC compression decode LV-071, scavenge types LV-072, scan header layout LV-073 — none of which were in a published build before).
+
+### Fixed (golden rebuild)
 - **Golden 26ai set rebuilt from scratch (2026-11-03, `golden-26ai-20261103`) after the original account and its Releases were lost.** Same image digest (`free@sha256:1a213af1…`), same `lab/sql`, 18 tables, 147,661 truth values, `dbv` 0 corrupt pages on all 4 files. Every gate re-run against it with `ODR_GOLDEN` = `ODR_GOLDEN_V2` = the new set: `golden_lab` 12/12 (147,649 byte-exact + 12 materialised, 10,009 un-escaped, 18 LOB values, 4 out of line; dictionary 71,862 objects, 0 issues), `golden_cli` 12/12 (incl. damage, forge/swap/ransom, tainted, wiped header, compressed 2000/2000), workspace 117/117. **One test bug found**: `lob_locators_of_row6` (golden_cli) read the locator straight from the ROWID's slot; in the rebuilt set `DBMS_LOB.WRITEAPPEND` *migrated* row 6 of `T_LOB_BASIC` (3604/5 → 3608/0, stub flag `H` with `nrid`, cc = 0), so the helper found no locator and the test failed with 2 chunk blocks instead of 4. The **product was right** (`odr extract` already follows the stub: 6/6 verified, row 6 = 6,000 `L` + 6,000 bytes `0x4D`); the helper now follows a migrated stub exactly once, like the row readers (LV-046). Red without the fix, green with it. Row placement after a LOB grows is not deterministic across rebuilds — tests must locate rows the way the reader does, never by a fixed slot.
 ### Added
 - **`odr scan` reads block size / byte order from the file header (LV-073)**: `--block-size`/`--endian` are now optional; a value that disagrees with `kcvfh` is refused unless `--force`; a non-datafile (text, random, empty) is refused with exit 1 instead of being reported as "all blocks damaged"; `layout_source` (`header` / `forced` / `forced (header unreadable)`) in text and JSON output. Found by an adversarial-input pass (empty / random / text / truncated / wiped-header files through every subcommand — all other paths already failed honestly).

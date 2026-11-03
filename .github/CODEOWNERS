@@ -1,6 +1,6 @@
 # Two-agent ownership (ADR-0006, amended 2026-10-15). Both agents share the
-# @moain2026 account, so ownership is enforced by review, not by GitHub.
-*  @moain2026
+# @moain2028 account (moved from @moain2026, 2026-11-03), so ownership is enforced by review, not by GitHub.
+*  @moain2028
 # Lead: crates/odr-core/src/{bytes,error,block,source}.rs, row/, types/, charset/, dict/, infer/, docs/
 # Astra: crates/odr-core/src/{scan*,header*}, crates/odr-core/benches/, crates/odr-cli/,
 #        crates/odr-testkit/, lab/, bench/, fuzz/, ci/

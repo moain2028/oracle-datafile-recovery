@@ -1,1 +1,90 @@
-All rights reserved. © 2026 moain2026.
+ODR — ORACLE DATAFILE RECOVERY
+EVALUATION LICENCE AGREEMENT (END-USER LICENCE)
+
+Copyright (c) 2026 moain2028. All rights reserved.
+
+This agreement is between moain2028 (the "Owner") and the person or organisation
+that received ODR from the Owner (the "Evaluator"). By unpacking, installing,
+copying or running ODR you accept this agreement. If you do not accept it, do not
+use ODR and delete every copy.
+
+1. DEFINITIONS
+   "Software" means the programs odr / odr.exe and odr-corrupt / odr-corrupt.exe,
+   the scripts (try_odr.ps1, try_odr.sh, START_HERE.bat, integrity/verify.*),
+   the documentation, and the test datafiles distributed with them, in any
+   version, including updates the Owner provides.
+   "Your Data" means any datafile or other data you process with the Software.
+
+2. LICENCE GRANT
+   The Owner grants you a personal, non-exclusive, non-transferable, revocable,
+   royalty-free licence to install and run the Software, for the evaluation
+   period, solely to evaluate it internally and to report results to the Owner.
+   The evaluation period ends 90 days after you receive the Software, or earlier
+   when the Owner notifies you in writing, unless the Owner extends it in writing.
+
+3. RESTRICTIONS
+   You must not, and must not allow anyone else to:
+   (a) distribute, publish, sell, rent, lend, sublicense or otherwise make the
+       Software or the test datafiles available to any third party;
+   (b) use the Software to provide a commercial service to third parties
+       (including paid data-recovery work) without a separate written licence;
+   (c) reverse engineer, decompile or disassemble the Software, except to the
+       extent applicable law expressly permits this despite this restriction;
+   (d) remove or alter copyright notices, this agreement, THIRD_PARTY_LICENSES.txt,
+       the code signature or the integrity files;
+   (e) publish benchmark or test results without the Owner's written consent.
+
+4. OWNERSHIP AND CONFIDENTIALITY
+   The Software is licensed, not sold. The Owner keeps all rights, title and
+   interest in it, including all intellectual-property rights. The Software,
+   its documentation and its non-public behaviour are the Owner's confidential
+   information: keep them confidential with at least reasonable care.
+
+5. YOUR DATA
+   Your Data remains yours. The Software runs locally, opens source datafiles
+   read-only, and sends nothing over the network (the optional online trial
+   script only downloads the Owner's release files). The Owner receives Your
+   Data only if you choose to send it (for example a log file).
+
+6. FEEDBACK
+   You may send the Owner comments, logs and suggestions ("Feedback"). The Owner
+   may use Feedback freely, without obligation to you. Do not include personal
+   data or third-party confidential data in Feedback unless you are entitled to.
+
+7. THIRD-PARTY COMPONENTS
+   The Software contains open-source components licensed under their own
+   permissive licences (MIT, Apache-2.0, Unicode-3.0, Unlicense). They are
+   listed, with their licence texts, in THIRD_PARTY_LICENSES.txt. Nothing in this
+   agreement limits your rights under those licences for those components.
+
+8. NO WARRANTY
+   THIS IS AN EVALUATION (PRE-RELEASE, "ALPHA") VERSION. THE SOFTWARE IS PROVIDED
+   "AS IS" AND "AS AVAILABLE", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
+   INCLUDING WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE,
+   ACCURACY, AND NON-INFRINGEMENT. RECOVERED DATA MAY BE INCOMPLETE. ALWAYS WORK
+   ON COPIES OF YOUR DATAFILES AND CHECK RECOVERED DATA BEFORE RELYING ON IT.
+
+9. LIMITATION OF LIABILITY
+   TO THE MAXIMUM EXTENT PERMITTED BY LAW, THE OWNER IS NOT LIABLE FOR ANY
+   INDIRECT, INCIDENTAL, SPECIAL, CONSEQUENTIAL OR PUNITIVE DAMAGES, OR FOR LOSS
+   OF DATA, PROFITS, REVENUE OR BUSINESS, ARISING FROM THE USE OF OR INABILITY TO
+   USE THE SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGES. THE
+   OWNER'S TOTAL LIABILITY UNDER THIS AGREEMENT IS LIMITED TO ZERO (0), BECAUSE
+   THE EVALUATION LICENCE IS FREE OF CHARGE, EXCEPT WHERE THE LAW DOES NOT ALLOW
+   SUCH A LIMITATION.
+
+10. TERMINATION
+   This agreement ends automatically at the end of the evaluation period or if
+   you breach it. On termination stop using the Software and delete all copies
+   (the outputs you produced from Your Data remain yours). Sections 3 to 11
+   survive termination.
+
+11. GENERAL
+   Oracle is a registered trademark of Oracle Corporation and/or its affiliates.
+   ODR is independent and is not affiliated with, endorsed or sponsored by Oracle.
+   You must comply with all export-control and sanctions laws that apply to you.
+   If any provision is unenforceable, the rest remains in effect. This is the
+   entire agreement on the evaluation of the Software; any commercial use needs a
+   separate written licence from the Owner.
+
+Contact: the Owner, through the channel from which you received the Software.

@@ -214,6 +214,28 @@ fn float_text(x: f64, shortest: String) -> String {
     }
 }
 
+/// Character set of CLOB data described by a locator (LV-068, LV-074):
+/// `NCLOB` → national set; UCS-2 flag → `AL16UTF16`; else the database set.
+pub fn clob_charset(ucs2: bool, national: bool, cs: Charsets) -> Charset {
+    if national {
+        cs.national
+    } else if ucs2 {
+        Charset::Al16Utf16
+    } else {
+        cs.database
+    }
+}
+
+/// `true` when a non-national CLOB locator's UCS-2 flag contradicts the
+/// database character set read from `PROPS$` (LV-074): a varying-width
+/// Unicode database stores every CLOB as UCS-2 (flag set, measured on
+/// 26ai/21c/18c/11g), a single-byte one stores it in its own set (flag
+/// clear, measured on 11g `AR8MSWIN1256`). Either side being wrong would
+/// print a wrong text, so the value is rejected instead.
+pub fn clob_form_mismatch(l: &LobLocator<'_>, national: bool, cs: Charsets) -> bool {
+    !national && l.ucs2 != cs.database.is_varying_width_unicode()
+}
+
 /// Decode one column. `None` (NULL) always yields [`Value::Null`].
 pub fn decode_value(raw: Option<&[u8]>, ty: ColumnType, cs: Charsets) -> Value {
     let Some(raw) = raw else { return Value::Null };
@@ -267,21 +289,23 @@ pub fn decode_value(raw: Option<&[u8]>, ty: ColumnType, cs: Charsets) -> Value {
                     lobid,
                     raw: raw.to_vec(),
                 },
+                Ok(l) if character && clob_form_mismatch(&l, national, cs) => {
+                    invalid(DecodeError::malformed(
+                        "lob locator",
+                        6,
+                        "locator UCS-2 flag disagrees with the database character set (LV-074)",
+                    ))
+                }
                 Ok(LobLocator {
                     data: LobData::Inline(bytes),
+                    ucs2,
                     ..
                 }) => {
                     if character {
-                        // LV-068: in-row CLOB data is UCS-2 (AL16UTF16) when
-                        // the database character set is a varying-width
-                        // Unicode set; otherwise it is in the DB character set.
-                        let set = if national {
-                            cs.national
-                        } else if cs.database.is_varying_width_unicode() {
-                            Charset::Al16Utf16
-                        } else {
-                            cs.database
-                        };
+                        // LV-068/LV-074: the locator itself says how the CLOB
+                        // data is stored (byte 6 bit 0x80 = UCS-2); a
+                        // disagreement with PROPS$ was rejected above.
+                        let set = clob_charset(ucs2, national, cs);
                         let d = charset::decode(bytes, set);
                         let exact = d.is_exact();
                         Value::Text {

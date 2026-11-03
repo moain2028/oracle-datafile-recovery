@@ -17,6 +17,6 @@ odr-corrupt --input X.dbf --output Y.dbf --block-size 8192 --seed N --op bitrot:
 
 Exit codes: `0` all rows verified/inferred · `2` some rows rejected · `1` request refused.
 
-This is a confidential evaluation build. © 2026 moain2026. All rights reserved.
+This is a confidential evaluation build. © 2026 moain2028. All rights reserved. Use is governed by LICENSE (evaluation licence); open-source components: THIRD_PARTY_LICENSES.txt.
 Redistribution, decompilation or reverse engineering is not permitted. See `LICENSE`.
 Feedback: open an issue in the private repository or contact the owner directly.

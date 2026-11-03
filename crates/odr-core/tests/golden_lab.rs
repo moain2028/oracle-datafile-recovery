@@ -1858,9 +1858,23 @@ fn lab2_second_version_reads_like_oracle() {
             })
             .map_or_else(|| panic!("no file for ts {ts} rfile {rfile}"), |i| i.file)
     };
+    // Character sets from PROPS$ (LV-056), checked against Oracle's own
+    // meta/database.txt — the AR8MSWIN1256 set (2026-11-03) is read with its
+    // real single-byte charset, never an assumed AL32UTF8.
+    let (props, prop_issues) = dict.properties(&src, sysf);
+    assert!(prop_issues.is_empty(), "{prop_issues:?}");
+    let db_txt = std::fs::read_to_string(g.join("meta/database.txt")).unwrap();
+    for key in ["NLS_CHARACTERSET", "NLS_NCHAR_CHARACTERSET"] {
+        let want = db_txt
+            .lines()
+            .find_map(|l| l.strip_prefix(&format!("nls|{key}|")))
+            .unwrap();
+        assert_eq!(props[key].as_deref(), Some(want), "{key}");
+    }
     let cs = Charsets {
-        database: Charset::Al32Utf8,
-        national: Charset::Al16Utf16,
+        database: Charset::from_oracle_name(props["NLS_CHARACTERSET"].as_deref().unwrap()).unwrap(),
+        national: Charset::from_oracle_name(props["NLS_NCHAR_CHARACTERSET"].as_deref().unwrap())
+            .unwrap(),
     };
     let mut checked = 0;
     let mut journal_cells = 0usize;

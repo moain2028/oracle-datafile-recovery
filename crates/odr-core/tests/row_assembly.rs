@@ -228,6 +228,58 @@ fn typed_values_and_canonical_text() {
     );
 }
 
+/// Character sets of the database the 26ai LOB locators below were copied
+/// from (golden `AL32UTF8`). Decoding them as if the database were
+/// `AR8MSWIN1256` is a contradiction LV-074 rejects (see
+/// `lob_locator_charset_form_lv074`).
+const CS_UTF8: Charsets = Charsets {
+    database: Charset::Al32Utf8,
+    national: Charset::Al16Utf16,
+};
+
+/// LV-074 — the locator says how CLOB data is stored (byte 6 bit `0x80` =
+/// UCS-2) and 11.2 writes a different header constant (`00 54 00 01`).
+/// Bytes copied from the real blocks of `golden-ar8-20261103` (11g XE,
+/// `AR8MSWIN1256`, `T_LOB_BASIC` id 2 col C, block 5/3612 slot 1) and of
+/// `golden-11g-20261103` (11g XE, `AL32UTF8`, same row). Before LV-074 both
+/// were rejected ("locator does not start with 00 70 00 01").
+#[test]
+fn lob_locator_charset_form_lv074() {
+    use odr_core::types::{LobData, LobLocator};
+    let ar8 = hex(
+        "00540001020c0000000100000001000000489ed600230900000000000013000000000001ddc7cae6d1c920d1dee32031202d20e3d1ddde",
+    );
+    let l = LobLocator::parse(&ar8).unwrap();
+    assert!(l.character && !l.ucs2, "single-byte CLOB: no UCS-2 flag");
+    assert!(matches!(l.data, LobData::Inline(b) if b.len() == 19));
+    let v = decode_value(Some(&ar8), ColumnType::Clob { national: false }, CS);
+    assert_eq!(v.canonical().as_deref(), Some("فاتورة رقم 1 - مرفق"));
+    assert!(v.is_exact());
+    // Same row, 11g AL32UTF8: `00 54 00 01` header, UCS-2 data.
+    let g11 = hex(
+        "00540001020c8000000200000001000000487cda0036090000000000002600000000000106410627062a0648063106290020063106420645002000310020002d00200645063106410642",
+    );
+    let l = LobLocator::parse(&g11).unwrap();
+    assert!(l.character && l.ucs2);
+    let v = decode_value(Some(&g11), ColumnType::Clob { national: false }, CS_UTF8);
+    assert_eq!(v.canonical().as_deref(), Some("فاتورة رقم 1 - مرفق"));
+    // Contradictions are rejected, never decoded with the wrong charset:
+    // a UCS-2 locator in a single-byte database, a single-byte locator in
+    // an AL32UTF8 database.
+    assert!(matches!(
+        decode_value(Some(&g11), ColumnType::Clob { national: false }, CS),
+        Value::Invalid { .. }
+    ));
+    assert!(matches!(
+        decode_value(Some(&ar8), ColumnType::Clob { national: false }, CS_UTF8),
+        Value::Invalid { .. }
+    ));
+    // Any other header constant is still refused.
+    let mut bad = ar8.clone();
+    bad[1] = 0x60;
+    assert!(LobLocator::parse(&bad).is_err());
+}
+
 /// LV-068 — in-row LOB locators, bytes copied from the real 26ai blocks
 /// (`T_LOB_BASIC` block 16/3622 and `T_LOB_SECURE` block 16/4447 of golden
 /// `20261024T085903Z`). Inline data decodes exactly; the out-of-line
@@ -247,7 +299,7 @@ fn lob_locators_from_real_blocks() {
         LobData::Inline(&[0xde, 0xad, 0xbe, 0xef, 0x00, 0xff])
     );
     assert_eq!(
-        decode_value(Some(&basic_blob), ColumnType::Blob, CS)
+        decode_value(Some(&basic_blob), ColumnType::Blob, CS_UTF8)
             .canonical()
             .as_deref(),
         Some("DEADBEEF00FF")
@@ -259,9 +311,13 @@ fn lob_locators_from_real_blocks() {
     assert!(l.character);
     assert_eq!(l.data, LobData::Inline(&[]));
     assert_eq!(
-        decode_value(Some(&basic_empty), ColumnType::Clob { national: false }, CS)
-            .canonical()
-            .as_deref(),
+        decode_value(
+            Some(&basic_empty),
+            ColumnType::Clob { national: false },
+            CS_UTF8
+        )
+        .canonical()
+        .as_deref(),
         Some("")
     );
     // BasicFile out-of-line CLOB (6000 chars, id 6): locator only.
@@ -272,7 +328,11 @@ fn lob_locators_from_real_blocks() {
     assert!(
         matches!(l.data, LobData::OutOfLine { bytes: Some(12_000), ref chunks } if chunks == &[(0x0400_0f5f, 1), (0x0400_0f63, 1)])
     );
-    let v = decode_value(Some(&basic_out), ColumnType::Clob { national: false }, CS);
+    let v = decode_value(
+        Some(&basic_out),
+        ColumnType::Clob { national: false },
+        CS_UTF8,
+    );
     assert!(matches!(v, Value::LobOutOfLine { .. }));
     assert!(!v.is_exact());
     assert!(v.canonical().unwrap().starts_with("\\x0070"));
@@ -315,12 +375,16 @@ fn lob_locators_from_real_blocks() {
     // Truncated locator: Invalid, never a shorter LOB.
     let cut = &basic_blob[..basic_blob.len() - 1];
     assert!(matches!(
-        decode_value(Some(cut), ColumnType::Blob, CS),
+        decode_value(Some(cut), ColumnType::Blob, CS_UTF8),
         Value::Invalid { .. }
     ));
     // Column type disagreeing with the locator (BLOB locator in a CLOB column): Invalid.
     assert!(matches!(
-        decode_value(Some(&basic_blob), ColumnType::Clob { national: false }, CS),
+        decode_value(
+            Some(&basic_blob),
+            ColumnType::Clob { national: false },
+            CS_UTF8
+        ),
         Value::Invalid { .. }
     ));
 }

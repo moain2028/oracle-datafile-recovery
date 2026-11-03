@@ -50,3 +50,16 @@ forge داخل قيمة مع checksum مُعاد حسابه (0.16%) · تصاد�
 - **pwsh 7 ≠ Windows PowerShell 5.1**: اختبار محلي بـ pwsh 7 لا يكفي لسكربت يُسلَّم لويندوز؛ `trial.yml` على `windows-latest` بـ `shell: powershell` هو البرهان.
 - صور gvenzl لا تحوي `find`/`which` — استخدم `ls` و`$ORACLE_HOME/bin/dbv` بالمسار الكامل.
 - التوكن: يُحفظ في `.git/secrets/pat` (600، خارج الشجرة)، لا يُطبع أبداً (`sed "s/$T/***/g"` على كل مخرجات push). **المالك يلغيه في نهاية المشروع.**
+
+
+## تحديث (2026-11-03 ب) — الإصدار 0.5.0
+
+**ما أُنجز (PR #5):**
+- **LV-074**: `lob.rs` يقبل رأسَي المحدِّد `00 70 00 01` (12.2+) و`00 54 00 01` (11.2)؛ الحقل `ucs2` = البايت 6 & 0x80؛ `value::clob_charset` و`clob_form_mismatch`؛ أي تناقض بين المحدِّد وPROPS$ ⇒ رفض بسبب معلَن. اختبار `lob_locator_charset_form_lv074` (يفشل بدون الإصلاح) و`lab2_lob_tables_match_oracle` (18 قيمة LOB).
+- **مجموعات ذهبية** (Releases خاصة): 26ai `20261103T003005Z`، 21c `20261103T023601Z`، 11g `20261103T025745Z`، 18c `20261103T050936Z`، ar8 `20261103T044428Z`. وصفة AR8: 11g XE فارغة ← `STARTUP RESTRICT; ALTER DATABASE CHARACTER SET INTERNAL_USE AR8MSWIN1256` ← تحميل المجموعة (نسخ SQL في `meta/*.sql` داخل المجموعة).
+- **التوقيع المجاني**: شهادة ذاتية (CN=ODR Oracle Datafile Recovery, O=moain2028، صالحة حتى 2031-11-03، leaf: codeSigning فقط). السر في GitHub: `ODR_SIGN_PFX_B64` + `ODR_SIGN_PASS`؛ نسخة محلية في `.git/secrets/` (خارج الشجرة). الجزء العام: `docs/field/integrity/ODR-code-signing.cer` + `SIGNER.txt`. `release.yml` يوقّع `odr.exe`/`odr-corrupt.exe` بـ signtool مع ختم DigiCert (احتياطي Sectigo) ويتحقق من البصمة.
+  - الحدّ: SmartScreen يبقى يحذّر حتى يشغّل المستخدم `trust-certificate.ps1` (لحسابه فقط، بلا صلاحيات مدير). الثقة الكاملة تحتاج شهادة مدفوعة أو Azure Trusted Signing (رخيص، غير مجاني)؛ SignPath Foundation مجانية للمفتوح المصدر فقط (المستودع خاص).
+- **مجلد integrity/** يُولَّد بـ `tools/make_integrity.sh DIR VERSION`: SHA256SUMS لكل ملف + توقيع CMS (`SHA256SUMS.p7s`) + الشهادة + verify.ps1/verify.sh + trust-certificate.ps1 + README (عربي/إنجليزي) + VERSION.txt. مُختبر: ملف معدَّل يُكشف، قائمة معدَّلة يُكشف توقيعها، ملفات المستخدم الإضافية (out/) لا تؤثر ⇒ **التحديث بالفكّ فوق المجلد آمن**.
+- **الأوراق القانونية**: `LICENSE` رخصة تقييم (90 يوماً، بلا ضمان، سرية، بياناتك لك، علامة Oracle)؛ `THIRD_PARTY_LICENSES.txt` من `tools/gen_third_party.py` (40 مكتبة، كلها MIT/Apache/Unicode/Unlicense) — CI (`ubuntu`) يفشل إن صار قديماً: بعد أي تغيير تبعيات شغّل `python3 tools/gen_third_party.py`.
+
+**الباقي بالترتيب:** دمج PR #5 ← وسم `v0.5.0-alpha` ← `trial.yml` (bundle-windows: فحص السلامة + 33/33) ← تنزيل الحزمة والتحقق ← تسليمها للمالك. بعدها: ملف تالف حقيقي من العميل، 19c (رخصة)، قياس السرعة (M1)، SQL*Loader.

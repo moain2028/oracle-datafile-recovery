@@ -608,14 +608,25 @@ pub(crate) fn extract(
                     let Ok(loc) = odr_core::types::LobLocator::parse(raw) else {
                         continue;
                     };
+                    let national = visible.get(i).is_some_and(|c| {
+                        matches!(
+                            c.column_type(),
+                            odr_core::value::ColumnType::Clob { national: true }
+                        )
+                    });
+                    if loc.character && odr_core::value::clob_form_mismatch(&loc, national, cs) {
+                        lob_fail.get_or_insert_with(|| {
+                            format!(
+                                "column {}: LOB locator UCS-2 flag disagrees with the database character set (LV-074)",
+                                i.saturating_add(1)
+                            )
+                        });
+                        continue;
+                    }
                     match odr_core::dict::lob::read_out_of_line(&set, hdr_file, &loc, None) {
                         Ok(bytes) => {
                             let v = if loc.character {
-                                let setc = if cs.database.is_varying_width_unicode() {
-                                    Charset::Al16Utf16
-                                } else {
-                                    cs.database
-                                };
+                                let setc = odr_core::value::clob_charset(loc.ucs2, national, cs);
                                 let d = odr_core::charset::decode(&bytes.data, setc);
                                 let exact = d.is_exact();
                                 Value::Text {

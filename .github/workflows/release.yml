@@ -39,9 +39,38 @@ jobs:
         run: cargo test --workspace --locked --release
       - name: Build
         run: cargo build --release --locked -p odr-cli -p odr-corrupt --target ${{ matrix.target }}
+      - name: Sign (Windows, Authenticode SHA-256 + RFC 3161 timestamp)
+        # Self-issued ODR certificate (free; public part in docs/field/integrity). The private key
+        # lives only in the ODR_SIGN_PFX_B64 secret and in RUNNER_TEMP for this step.
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          ODR_SIGN_PFX_B64: ${{ secrets.ODR_SIGN_PFX_B64 }}
+          ODR_SIGN_PASS: ${{ secrets.ODR_SIGN_PASS }}
+        run: |
+          $pfx = Join-Path $env:RUNNER_TEMP "s.pfx"
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:ODR_SIGN_PFX_B64))
+          $st = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" | Sort-Object FullName | Select-Object -Last 1
+          $want = (Get-Content docs/field/integrity/SIGNER.txt | Where-Object { $_ -match '^[0-9A-F]{40}$' })
+          foreach ($e in "odr.exe", "odr-corrupt.exe") {
+            $f = "target/${{ matrix.target }}/release/$e"
+            $ok = $false
+            foreach ($ts in "http://timestamp.digicert.com", "http://timestamp.sectigo.com") {
+              & $st.FullName sign /f $pfx /p $env:ODR_SIGN_PASS /fd SHA256 /tr $ts /td SHA256 /d "ODR Oracle Datafile Recovery" $f
+              if ($LASTEXITCODE -eq 0) { $ok = $true; break }
+            }
+            if (-not $ok) { throw "signing failed: $e" }
+            $s = Get-AuthenticodeSignature $f
+            if ($s.SignerCertificate.Thumbprint -ne $want -or -not $s.TimeStamperCertificate) { throw "$e signature check failed: $($s.Status) $($s.SignerCertificate.Thumbprint)" }
+            Write-Host "$e signed: status $($s.Status), signer $($s.SignerCertificate.Thumbprint), timestamped"
+          }
+          Remove-Item $pfx -Force
       - name: Package (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
+        env:
+          ODR_SIGN_PFX_B64: ${{ secrets.ODR_SIGN_PFX_B64 }}
+          ODR_SIGN_PASS: ${{ secrets.ODR_SIGN_PASS }}
         run: |
           $v = "${{ github.ref_name }}"; if ($v -eq "") { $v = "dev" }
           $d = "odr-$v-${{ matrix.target }}"
@@ -50,11 +79,18 @@ jobs:
           Copy-Item target/${{ matrix.target }}/release/odr-corrupt.exe $d/
           Copy-Item LICENSE $d/
           Copy-Item docs/field/README_TRIAL.md $d/README.md
-          Copy-Item docs/field/QUICKSTART_ar.md, docs/field/TRIAL_KIT_ar.md, docs/field/try_odr.ps1, docs/field/try_odr.sh $d/
+          Copy-Item docs/field/QUICKSTART_ar.md, docs/field/TRIAL_KIT_ar.md, docs/field/try_odr.ps1, docs/field/try_odr.sh, THIRD_PARTY_LICENSES.txt $d/
+          & bash tools/make_integrity.sh $d $v
+          if ($LASTEXITCODE -ne 0) { throw "integrity folder failed" }
+          & powershell -NoProfile -ExecutionPolicy Bypass -File "$d/integrity/verify.ps1"
+          if ($LASTEXITCODE -ne 0) { throw "verify.ps1 failed on the package" }
           Compress-Archive -Path $d -DestinationPath "$d.zip"
           (Get-FileHash "$d.zip" -Algorithm SHA256).Hash.ToLower() + "  $d.zip" | Out-File -Encoding ascii "$d.zip.sha256"
       - name: Package (Linux)
         if: runner.os == 'Linux'
+        env:
+          ODR_SIGN_PFX_B64: ${{ secrets.ODR_SIGN_PFX_B64 }}
+          ODR_SIGN_PASS: ${{ secrets.ODR_SIGN_PASS }}
         run: |
           v="${{ github.ref_name }}"; [ -z "$v" ] && v=dev
           d="odr-$v-${{ matrix.target }}"
@@ -62,7 +98,8 @@ jobs:
           cp target/${{ matrix.target }}/release/odr target/${{ matrix.target }}/release/odr-corrupt "$d/"
           cp LICENSE "$d/"
           cp docs/field/README_TRIAL.md "$d/README.md"
-          cp docs/field/QUICKSTART_ar.md docs/field/TRIAL_KIT_ar.md docs/field/try_odr.ps1 docs/field/try_odr.sh "$d/"
+          cp docs/field/QUICKSTART_ar.md docs/field/TRIAL_KIT_ar.md docs/field/try_odr.ps1 docs/field/try_odr.sh THIRD_PARTY_LICENSES.txt "$d/"
+          bash tools/make_integrity.sh "$d" "$v"
           tar -czf "$d.tar.gz" "$d"
           sha256sum "$d.tar.gz" > "$d.tar.gz.sha256"
       - uses: actions/upload-artifact@v4
@@ -83,6 +120,8 @@ jobs:
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
+      ODR_SIGN_PFX_B64: ${{ secrets.ODR_SIGN_PFX_B64 }}
+      ODR_SIGN_PASS: ${{ secrets.ODR_SIGN_PASS }}
       GOLDEN_TAG: golden-26ai-20261103
       GOLDEN_TGZ: odr_golden_26ai_20261103T003005Z.tar.gz
     steps:
@@ -104,8 +143,9 @@ jobs:
             exp=$(tr -d '\r' < "$f.sha256" | awk '{print tolower($1)}'); act=$(sha256sum "$f" | awk '{print $1}')
             [ "$exp" = "$act" ] || { echo "sha256 mismatch: $f"; exit 1; }; echo "sha256 ok: $f"
           done
-          cp docs/field/try_odr.ps1 docs/field/QUICKSTART_ar.md docs/field/bundle/README_AR.txt LICENSE "$b/"
+          cp docs/field/try_odr.ps1 docs/field/QUICKSTART_ar.md docs/field/bundle/README_AR.txt LICENSE THIRD_PARTY_LICENSES.txt "$b/"
           sed "s|@TAG@|$v|g" docs/field/bundle/START_HERE.bat > "$b/START_HERE.bat"
+          bash tools/make_integrity.sh "$b" "$v"
           ls -la "$b"
           zip -r -q "$b.zip" "$b"
           sha256sum "$b.zip" > "$b.zip.sha256"

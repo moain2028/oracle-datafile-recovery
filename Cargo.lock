@@ -354,7 +354,7 @@ dependencies = [
 
 [[package]]
 name = "odr-cli"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -365,7 +365,7 @@ dependencies = [
 
 [[package]]
 name = "odr-core"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "odr-testkit",
  "proptest",
@@ -376,7 +376,7 @@ dependencies = [
 
 [[package]]
 name = "odr-corrupt"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -390,7 +390,7 @@ dependencies = [
 
 [[package]]
 name = "odr-testkit"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "odr-core",
 ]

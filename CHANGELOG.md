@@ -2,7 +2,10 @@
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 
 
-## Unreleased
+## 0.6.0-alpha — 2026-11-03
+- **Windows desktop app**: `app/windows/` — Arabic right-to-left window `ODR.exe` (.NET Framework 4.8, built into Windows 10/11, no runtime download). Three steps, no typing: add .dbf files → read tables → extract checked tables; results table (verified / inferred / rejected per table, coloured), double-click → data preview (first 2,000 rows) + «open in Excel» (UTF-8 BOM copy); «extract without SYSTEM» (scavenge); demo button. Engines odr.exe/odr-corrupt.exe installed in `tool\`.
+- **Arabic installer** `ODR-Setup-<ver>.exe` (Inno Setup 6, per-user, no admin, Start-menu + optional desktop shortcut, optional demo component ~500 MB, uninstaller; same AppId ⇒ a newer Setup updates in place, outputs in Documents\ODR untouched). App, engines and Setup are Authenticode-signed (ODR certificate).
+- **CI `app.yml`**: builds + signs on a real Windows runner, installs silently, runs the installed app with `--autotest` (drives its own window: demo files → 18 tables read → 18 extracted → Arabic preview), saves screenshots + `autotest.txt`, uninstalls. Artifacts `odr-setup`, `odr-app-proof`. First run on a real Windows runner: install OK, installed app 14/14 checks, 18/18 tables, 22,709 rows verified, 0 rejected, clean uninstall (proof + screenshots: `docs/app/proof-2026-11-03/`). On `v*` tags the Setup is attached to the Release.
 - Repository renamed `moain2028/new-pro2` → **`moain2028/oracle-datafile-recovery`** (private; GitHub redirects the old name). Scripts, Cargo.toml and docs use the new name.
 - trial.yml: the tamper-drill step resets the exit code after the expected verify failure (#7).
 

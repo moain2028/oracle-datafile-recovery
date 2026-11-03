@@ -49,6 +49,17 @@ jobs:
           call START_HERE.bat
           if errorlevel 1 exit /b 1
           powershell -NoProfile -Command "if (-not (Select-String -Path odr-trial-log.txt -SimpleMatch 'RESULT: 33 passed, 0 failed' -Quiet)) { Get-Content odr-trial-log.txt; exit 1 }"
+      - name: Integrity + Authenticode of the extracted tool (signed odr.exe / odr-corrupt.exe)
+        shell: powershell
+        run: |
+          $d = Join-Path $env:RUNNER_TEMP "eval\odr-$env:TAG-windows-trial-bundle\odr-$env:TAG-x86_64-pc-windows-msvc"
+          powershell -NoProfile -ExecutionPolicy Bypass -File "$d\integrity\verify.ps1"
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          # Tamper drill: one changed byte in odr.exe must make verify fail.
+          $b = [IO.File]::ReadAllBytes("$d\odr.exe"); $b[1000] = $b[1000] -bxor 1; [IO.File]::WriteAllBytes("$d\odr.exe", $b)
+          powershell -NoProfile -ExecutionPolicy Bypass -File "$d\integrity\verify.ps1"
+          if ($LASTEXITCODE -eq 0) { Write-Host "verify accepted a tampered odr.exe"; exit 1 }
+          Write-Host "tampered odr.exe detected - OK"
 
   online:
     if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'

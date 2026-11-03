@@ -341,12 +341,29 @@ fn lob_locators_of_row6<'a>(
         .to_owned();
     let p: Vec<&str> = line.split('|').collect();
     let (block, slot): (usize, u16) = (p[4].parse().unwrap(), p[5].parse().unwrap());
-    let db = odr_core::row::DataBlock::parse(
-        &img[block * 8192..(block + 1) * 8192],
-        odr_core::ByteOrder::Little,
-    )
-    .unwrap();
-    let row = db.row(slot).unwrap().unwrap();
+    let piece = |block: usize, slot: u16| {
+        odr_core::row::DataBlock::parse(
+            &img[block * 8192..(block + 1) * 8192],
+            odr_core::ByteOrder::Little,
+        )
+        .unwrap()
+        .row(slot)
+        .unwrap()
+        .unwrap()
+    };
+    let mut row = piece(block, slot);
+    // A migrated row leaves only a head stub (flag H, no F, cc = 0) at its
+    // ROWID; the columns live at `nrid` (golden rebuilt 2026-11-03: row 6 of
+    // T_LOB_BASIC moved 3604/5 -> 3608/0 when DBMS_LOB.WRITEAPPEND grew it).
+    // Follow it exactly once, as the row readers do (LV-046).
+    if row.flag & odr_core::row::flag::H != 0 && row.flag & odr_core::row::flag::F == 0 {
+        let (dba, nslot) = row.next.unwrap();
+        row = piece(odr_core::block::Rdba(dba).block() as usize, nslot);
+        assert!(
+            row.flag & odr_core::row::flag::F != 0,
+            "nrid target is not a first piece"
+        );
+    }
     let mut out = Vec::new();
     for (name, idx) in [("C", 1usize), ("B", 2)] {
         if let Some(Some(raw)) = row.columns.get(idx) {

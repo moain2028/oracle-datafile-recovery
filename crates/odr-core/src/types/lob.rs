@@ -12,12 +12,15 @@
 //!
 //! ```text
 //! off  size  field                                   measured
-//! 0    4     00 70 00 01                             constant
+//! 0    4     00 70 00 01 (12.2+: 18c/21c/26ai)       version constant
+//!             00 54 00 01 (11.2: 11g XE)             (LV-074)
 //! 4    1     type: 02 = CLOB, 01 = BLOB              -
 //! 5    1     0c                                      constant
-//! 6    1     80 = character LOB, 00 = binary         -
+//! 6    1     80 = CLOB data in UCS-2 (varying-width  -
+//!             DB charset), 00 = BLOB or CLOB in a
+//!             single-byte DB charset (LV-074)
 //! 7    1     00 = BasicFile, 80 = SecureFile         -
-//! 8    2     00 02 (CLOB) / 00 01 (BLOB)             -
+//! 8    2     00 02 (UCS-2 CLOB) / 00 01 (other)      -
 //! 10   10    LOB id                                  unique per LOB value
 //! 20   2     u16 BE: bytes from offset 20 to the end -
 //! 22   …     inode (differs by storage kind):
@@ -34,9 +37,10 @@
 //! NULL, never as an empty string. `CLOB` data in a database whose
 //! character set is a varying-width Unicode set (`AL32UTF8`, `UTF8`) is
 //! stored as UCS-2 big-endian (`AL16UTF16`); in a fixed single-byte
-//! database character set it is stored in that character set (Oracle
-//! Oracle LOB Developer's Guide — the single-byte case
-//! has no lab file yet: LV-068 ⬜ for it).
+//! database character set it is stored in that character set. The
+//! locator says which: byte 6 bit `0x80` ([`LobLocator::ucs2`]) — measured
+//! set on every CLOB of 26ai/21c/18c/11g `AL32UTF8` and clear on every CLOB
+//! of an 11g `AR8MSWIN1256` database (LV-074).
 
 use crate::ByteOrder;
 use crate::bytes::{read_u8, read_u16, read_u32};
@@ -84,6 +88,11 @@ pub enum LobData<'a> {
 pub struct LobLocator<'a> {
     /// `true` for CLOB/NCLOB (type byte `02`), `false` for BLOB (`01`).
     pub character: bool,
+    /// Byte 6 bit `0x80`: the character data is stored as UCS-2
+    /// (`AL16UTF16`). Set on every CLOB of an `AL32UTF8` database, clear on
+    /// BLOBs and on CLOBs of a single-byte database (`AR8MSWIN1256`),
+    /// measured on 26ai/21c/18c/11g (LV-068, LV-074).
+    pub ucs2: bool,
     /// Storage kind.
     pub storage: LobStorage,
     /// 10-byte LOB id.
@@ -109,11 +118,14 @@ impl<'a> LobLocator<'a> {
                 "shorter than the 22-byte locator header",
             ));
         }
-        if read_u32(raw, 0, be)? != 0x0070_0001 {
+        // LV-074: 12.2+ (18c/21c/26ai) write `00 70 00 01`; 11.2 (11g XE,
+        // AL32UTF8 and AR8MSWIN1256 alike) writes `00 54 00 01`. Every other
+        // field of the 20-byte header was measured identical across them.
+        if !matches!(read_u32(raw, 0, be)?, 0x0070_0001 | 0x0054_0001) {
             return Err(DecodeError::malformed(
                 WHAT,
                 0,
-                "locator does not start with 00 70 00 01",
+                "locator does not start with 00 70 00 01 or 00 54 00 01",
             ));
         }
         let character = match read_u8(raw, 4)? {
@@ -123,6 +135,10 @@ impl<'a> LobLocator<'a> {
         };
         if read_u8(raw, 5)? != 0x0c {
             return Err(DecodeError::malformed(WHAT, 5, "byte 5 is not 0x0c"));
+        }
+        let ucs2 = read_u8(raw, 6)? & 0x80 != 0;
+        if ucs2 && !character {
+            return Err(DecodeError::malformed(WHAT, 6, "UCS-2 flag on a BLOB"));
         }
         let storage = match read_u8(raw, 7)? {
             0x00 => LobStorage::BasicFile,
@@ -147,6 +163,7 @@ impl<'a> LobLocator<'a> {
         };
         Ok(Self {
             character,
+            ucs2,
             storage,
             lobid,
             data,

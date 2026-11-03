@@ -373,6 +373,111 @@ fn lob_locators_of_row6<'a>(
     out
 }
 
+/// LV-074 — the LOB tables of the second-version golden set (`ODR_GOLDEN2`:
+/// 21c, 18c, 11g, 11g `AR8MSWIN1256`) come out **verified and equal to
+/// Oracle**: every non-NULL CLOB/BLOB value against `rows.psv` (`len=N:` +
+/// `ASCIISTR` text for CLOB, hex for BLOB; first 4,000 characters + exact
+/// length). Before LV-074 every LOB row of an 11g file was rejected
+/// (header `00 54 00 01`; single-byte CLOB data read as UCS-2).
+#[test]
+fn lab2_lob_tables_match_oracle() {
+    let Some(g) = std::env::var_os("ODR_GOLDEN2").map(PathBuf::from) else {
+        return;
+    };
+    let dfs: Vec<PathBuf> = std::fs::read_dir(g.join("datafiles"))
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .collect();
+    let pick = |k: &str| {
+        dfs.iter()
+            .find(|p| p.to_string_lossy().contains(k))
+            .unwrap()
+            .clone()
+    };
+    let (system, assm) = (pick("system"), pick("odr_odr_assm01"));
+    let mut truth: HashMap<(String, String, String), String> = HashMap::new();
+    for l in std::fs::read_to_string(g.join("rows.psv")).unwrap().lines() {
+        let p: Vec<&str> = l.split('|').collect();
+        if p.len() >= 8 && p[0].starts_with("T_LOB_") && (p[2] == "C" || p[2] == "B") {
+            truth.insert(
+                (p[0].to_owned(), p[1].to_owned(), p[2].to_owned()),
+                p[7].to_owned(),
+            );
+        }
+    }
+    let tmp = std::env::temp_dir().join(format!("odr_cli_lab2_lob_{}", std::process::id()));
+    let mut compared = 0usize;
+    for table in ["T_LOB_BASIC", "T_LOB_SECURE"] {
+        let out_dir = tmp.join(table);
+        let out = Command::new(env!("CARGO_BIN_EXE_odr"))
+            .arg("extract")
+            .arg(&system)
+            .arg(&assm)
+            .args(["--table", &format!("ODR.{table}"), "--out"])
+            .arg(&out_dir)
+            .output()
+            .unwrap();
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "{table}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let ver = std::fs::read_to_string(out_dir.join("verified.csv")).unwrap();
+        assert_eq!(ver.lines().count(), 7, "{table}: 6 verified rows\n{ver}");
+        for line in ver.lines().skip(1) {
+            let f: Vec<&str> = line.split(',').collect();
+            let id = f[3];
+            for (col, got) in [("C", f[4]), ("B", f[5])] {
+                let want = &truth[&(table.to_owned(), id.to_owned(), col.to_owned())];
+                let (len, body) = want.strip_prefix("len=").unwrap().split_once(':').unwrap();
+                if len.is_empty() {
+                    assert_eq!(got, "", "{table} id {id} {col}: NULL");
+                    continue;
+                }
+                let n: usize = len.parse().unwrap();
+                if col == "C" {
+                    assert_eq!(got.chars().count(), n, "{table} id {id} C length");
+                    assert!(
+                        got.starts_with(&unescape_asciistr(body)),
+                        "{table} id {id} C"
+                    );
+                } else {
+                    assert_eq!(got.len(), 2 * n, "{table} id {id} B length");
+                    assert!(
+                        got.starts_with(&body.to_ascii_uppercase()),
+                        "{table} id {id} B"
+                    );
+                }
+                compared += 1;
+            }
+        }
+    }
+    assert_eq!(compared, 18, "non-NULL LOB values compared");
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+/// Inverse of Oracle `ASCIISTR` (`\XXXX` = one UTF-16 unit, surrogate pairs
+/// allowed); panics on anything else so a bad truth line cannot match.
+fn unescape_asciistr(s: &str) -> String {
+    let mut out = String::new();
+    let mut units: Vec<u16> = Vec::new();
+    let mut rest = s;
+    while !rest.is_empty() {
+        if let Some(r) = rest.strip_prefix('\\') {
+            units.push(u16::from_str_radix(&r[..4], 16).unwrap());
+            rest = &r[4..];
+            continue;
+        }
+        out.extend(char::decode_utf16(units.drain(..)).map(Result::unwrap));
+        let c = rest.chars().next().unwrap();
+        out.push(c);
+        rest = &rest[c.len_utf8()..];
+    }
+    out.extend(char::decode_utf16(units.drain(..)).map(Result::unwrap));
+    out
+}
+
 /// LV-071 — a BASIC-compressed table is decoded through its 9ir2 symbol
 /// table: 2,000/2,000 rows verified, canonical text identical to Oracle's
 /// `rows.psv`, exit 0, `compressed_blocks` reported.

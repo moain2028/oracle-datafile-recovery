@@ -9,6 +9,10 @@ Enterprise-grade, DUL-class tool for extracting data from corrupted / unopenable
 
 Download `odr-<ver>-x86_64-pc-windows-msvc.zip` or the Linux tarball from **Releases**, plus a golden set (`golden-26ai-20261018`, `golden-21c-20261021`). Then follow **`docs/field/TRIAL_KIT_ar.md`** (Arabic): scan → dict → extract, make deterministic damage with `odr-corrupt`, and compare the three layers against the clean extraction.
 
+
+## Windows app (0.6.0)
+For evaluators: download **`ODR-Setup-0.6.0.exe`** from the `v0.6.0-alpha` Release, run it (no admin rights), open «ODR - استرجاع بيانات أوراكل» from the Start menu: add .dbf files → read tables → extract. Arabic UI, signed. Source: `app/windows/`; CI proof on real Windows: `docs/app/proof-2026-11-03/`.
+
 ## Repository layout
 
 | Path | Content |

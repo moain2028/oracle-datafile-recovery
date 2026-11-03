@@ -60,6 +60,8 @@ jobs:
           powershell -NoProfile -ExecutionPolicy Bypass -File "$d\integrity\verify.ps1"
           if ($LASTEXITCODE -eq 0) { Write-Host "verify accepted a tampered odr.exe"; exit 1 }
           Write-Host "tampered odr.exe detected - OK"
+          # The runner exits with the last native exit code (the deliberately failing verify): reset it.
+          exit 0
 
   online:
     if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'

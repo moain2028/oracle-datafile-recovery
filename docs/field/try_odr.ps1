@@ -3,14 +3,14 @@
 # quick-start commands and COMPARES every number with what Oracle itself says.
 # Prints PASS/FAIL per step. Never writes to the source datafiles.
 #
-#   powershell -ExecutionPolicy Bypass -File try_odr.ps1 [-Dir C:\odr-trial] [-Tag v0.3.0-alpha]
+#   powershell -ExecutionPolicy Bypass -File try_odr.ps1 [-Dir C:\odr-trial] [-Tag v0.3.1-alpha]
 #
 # Needs: internet, ~700 MB disk (62 MB download, ~480 MB extracted), tar.exe (built into Windows 10+).
 
 [CmdletBinding()]
 param(
     [string]$Dir = (Join-Path $PWD "odr-trial"),
-    [string]$Tag = "v0.3.0-alpha",
+    [string]$Tag = "v0.3.1-alpha",
     [string]$Golden = "golden-26ai-20261103",
     [switch]$SkipDownload,
     # Testing only: use binaries from this directory instead of downloading the Windows zip.
@@ -146,7 +146,7 @@ Step "4. CLOB/BLOB inline + out-of-line (BasicFile and SecureFile)"
 foreach ($t in "T_LOB_BASIC", "T_LOB_SECURE") {
     $r = Run-Extract @($S, $A, "--table", "ODR.$t") "out/$t"
     Expect-Layers $r 6 0 0 0 $t
-    $csv = Import-Csv "out/$t/verified.csv" -Encoding UTF8
+    $csv = @(Import-Csv "out/$t/verified.csv" -Encoding UTF8)
     $row6 = $csv | Where-Object { $_.ID -eq "6" }
     Check ($row6.C.Length -eq 6000 -and ($row6.C -replace 'L', '') -eq '') "$t row 6 CLOB = 6000 × 'L' (assembled from LOB segment)"
     Check ($row6.B.Length -eq 12000 -and ($row6.B -replace '4D', '') -eq '') "$t row 6 BLOB = 6000 × 0x4D"
@@ -166,18 +166,19 @@ Expect-Layers $b 18737 0 1263 2 "bitrot → T_JOURNAL"
 $clean = [System.Collections.Generic.HashSet[string]]::new([string[]](Get-Content "out/journal/verified.csv" -Encoding UTF8))
 $wrong = @(Get-Content "out/bitrot/verified.csv" -Encoding UTF8 | Where-Object { -not $clean.Contains($_) })
 Check ($wrong.Count -eq 0) "verified rows from the damaged file that are NOT in the clean output: $($wrong.Count) (must be 0)"
-$reasons = Import-Csv "out/bitrot/rejected.csv" -Encoding UTF8 | Group-Object _reason | Sort-Object Count -Descending
+$reasons = @(Import-Csv "out/bitrot/rejected.csv" -Encoding UTF8 | Group-Object _reason | Sort-Object Count -Descending)
 Check ($reasons[0].Name -eq 'block integrity: ChecksumFail') "rejection reason = '$($reasons[0].Name)' ($($reasons[0].Count) rows)"
 
 & $Corrupt --input $A --output dmg/lobchunk.dbf --block-size 8192 --seed 7 --op bitrot:1 --blocks 3860:3860 | Out-Null
 $l = Run-Extract @($S, "dmg/lobchunk.dbf", "--table", "ODR.T_LOB_BASIC") "out/lobchunk"
 Expect-Layers $l 5 0 1 2 "1 flipped bit in LOB chunk block 3860 → T_LOB_BASIC"
-$rej = Import-Csv "out/lobchunk/rejected.csv" -Encoding UTF8
+# @(...) is required: Windows PowerShell 5.1 returns a single PSCustomObject (no .Count) for a one-row CSV.
+$rej = @(Import-Csv "out/lobchunk/rejected.csv" -Encoding UTF8)
 Check ($rej.Count -eq 1 -and $rej[0].ID -eq "6" -and $rej[0]._reason -match 'LOB out of line could not be assembled: Integrity .*ChecksumFail.*LV-070') `
     "only row 6 rejected, reason: $($rej[0]._reason)"
 
 # ---------------------------------------------------------------- 6. explicit refusal
-Step "6. Compressed table (COMPRESS BASIC): v0.2.0-alpha refused it, v0.3.0-alpha decodes it (LV-071)"
+Step "6. Compressed table (COMPRESS BASIC): v0.2.0-alpha refused it, v0.3.x decodes it (LV-071)"
 $c = & $Odr extract $S $A --table ODR.T_COMPRESS --out out/compress 2>&1
 $code = $LASTEXITCODE
 if ($code -eq 1) {
@@ -187,7 +188,7 @@ if ($code -eq 1) {
 } else {
     $r = Run-Extract @($S, $A, "--table", "ODR.T_COMPRESS") "out/compress"
     Expect-Layers $r 2000 0 0 0 "T_COMPRESS decoded through the symbol table (LV-071)"
-    $csv = Import-Csv "out/compress/verified.csv" -Encoding UTF8
+    $csv = @(Import-Csv "out/compress/verified.csv" -Encoding UTF8)
     $bad = @($csv | Where-Object { $_.V -ne ("repeated value " + ([int]$_.ID % 5)) -or [int]$_.N -ne ([int]$_.ID % 7) })
     Check ($bad.Count -eq 0) "every decoded row equals the generating formula (V = 'repeated value ' + ID mod 5, N = ID mod 7): $($bad.Count) wrong"
 }

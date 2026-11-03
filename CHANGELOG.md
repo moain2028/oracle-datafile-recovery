@@ -2,6 +2,10 @@
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 ## [Unreleased]
 
+## [0.3.1-alpha] - 2026-11-03
+### Fixed
+- **`try_odr.ps1` on real Windows PowerShell 5.1**: the first run of the new `trial.yml` on a `windows-latest` runner against the published `v0.3.0-alpha` gave 32 PASS / 1 FAIL. The tool's output was correct (row 6 rejected alone, reason `Integrity { rdba: 67112724, status: ChecksumFail } (LV-070)`); the *check* failed because Windows PowerShell 5.1 returns a single `PSCustomObject` — with no `.Count` — when `Import-Csv` reads a one-row CSV, so `$rej.Count -eq 1` was false. pwsh 7 (used for the local run) returns a collection, which is why 32/32 locally did not catch it. Every `Import-Csv` result is now wrapped in `@(...)`. `v0.3.0-alpha` ships the old script and is superseded; binaries are unchanged in behaviour.
+
 ## [0.3.0-alpha] - 2026-11-03
 ### Fixed
 - **Evaluator trial kit pointed at the dead account.** `try_odr.sh` / `try_odr.ps1` downloaded from `moain2026/oracle-datafile-recovery` (suspended, 404) and expected the lost `golden-26ai-20261024` set — any evaluator run would have stopped at step 1. Now: repository `moain2028/new-pro2`, golden `golden-26ai-20261103`, default tool tag `v0.3.0-alpha`, and every expected number re-measured on the rebuilt set (bitrot:400 seed 7 → 18,737 / 0 / 1,263; LOB chunk damage block 3860, rdba 67112724). `try_odr.sh` measured 32/32 on the local release build before tagging.

@@ -16,7 +16,7 @@ powershell -ExecutionPolicy Bypass -File try_odr.ps1 -Dir C:\odr-trial
 bash try_odr.sh ~/odr-trial
 ```
 
-النتيجة المتوقعة في السطر الأخير: `RESULT: 32 passed, 0 failed` (قُست بالنسخة `v0.3.0-alpha` على Linux وعلى Windows حقيقي في CI). أي FAIL = أرسل لنا المخرجات كاملة. الأقسام التالية تشرح ما يفعله السكربت خطوة خطوة لمن يريد أن يكتب الأوامر بيده.
+النتيجة المتوقعة في السطر الأخير: `RESULT: 32 passed, 0 failed` (قُست بالنسخة `v0.3.1-alpha` على Linux وعلى Windows حقيقي — Windows PowerShell 5.1 — في CI). أي FAIL = أرسل لنا المخرجات كاملة. الأقسام التالية تشرح ما يفعله السكربت خطوة خطوة لمن يريد أن يكتب الأوامر بيده.
 
 ## 0. حمّل (مرة واحدة)
 
@@ -26,7 +26,7 @@ bash try_odr.sh ~/odr-trial
 
 | ماذا | الملف | الحجم |
 |---|---|---|
-| الأداة | `odr-v0.3.0-alpha-x86_64-pc-windows-msvc.zip` (فيه `odr.exe` + `odr-corrupt.exe`) | ≈ 1 MB |
+| الأداة | `odr-v0.3.1-alpha-x86_64-pc-windows-msvc.zip` (فيه `odr.exe` + `odr-corrupt.exe`) | ≈ 1 MB |
 | ملفات التجربة | Release `golden-26ai-20261103` → `odr_golden_26ai_20261103T003005Z.tar.gz` | 62 MB (≈ 480 MB مفكوكة) |
 
 فكّ الاثنين. على Windows يفك `tar -xzf` من PowerShell مباشرة. تحقق من `.sha256` بجانب كل ملف إن أردت.
@@ -100,7 +100,7 @@ Compare-Object (Get-Content out\journal\verified.csv) (Get-Content out\bitrot\ve
 
 ```powershell
 .\odr.exe extract $S $G\odr_odr_assm01.dbf --table ODR.T_COMPRESS --out out\compress
-#   تتوقع: verified 2000 · inferred 0 · rejected 0   ورمز خروج 0  (v0.2.0-alpha كان يرفضه؛ v0.3.0-alpha يفكّه — LV-071)
+#   تتوقع: verified 2000 · inferred 0 · rejected 0   ورمز خروج 0  (v0.2.0-alpha كان يرفضه؛ v0.3.x يفكّه — LV-071)
 ```
 
 ما ترفضه الأداة صراحةً (لا تخمّن): صيغ ضغط غير BASIC المقاسة (OLTP/HCC)، TDE (يحتاج wallet)، Hash cluster/IOT، وتزوير قيمة داخل كتلة مع checksum صحيح (حدّ معلَن، يحتاج فهارس — M6). بلا ملف SYSTEM استخدم `odr scavenge` (كل شيء يخرج inferred، لا verified).

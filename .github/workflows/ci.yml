@@ -43,6 +43,39 @@ jobs:
           name: odr-windows-x64
           path: target/release/odr.exe
 
+  golden:
+    # The real proof: every golden test against Oracle's own truth on three
+    # versions (26ai, 21c, 11g). The sets live in this repository's private
+    # Releases (rebuilt 2026-11-03 from lab/). Without this job the golden
+    # tests skip silently and CI proves nothing about Oracle data.
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.99.0"
+      - uses: Swatinem/rust-cache@v2
+      - name: Download golden sets (26ai, 21c, 11g) and verify SHA-256
+        run: |
+          mkdir -p g && cd g
+          for t in golden-26ai-20261103 golden-21c-20261103 golden-11g-20261103; do
+            gh release download "$t" -R "${{ github.repository }}" -p '*.tar.gz' -p '*.sha256'
+          done
+          for s in *.tar.gz.sha256; do sha256sum -c "$s"; done
+          for f in *.tar.gz; do tar -xzf "$f"; done
+          for d in */; do (cd "$d" && sha256sum -c --quiet SHA256SUMS) && echo "$d SHA256SUMS ok"; done
+      - name: Golden tests — 26ai + 21c (hold-out)
+        run: |
+          export ODR_GOLDEN=$PWD/g/20261103T003005Z ODR_GOLDEN_V2=$PWD/g/20261103T003005Z ODR_GOLDEN2=$PWD/g/20261103T023601Z
+          cargo test --workspace --locked --release -- --test-threads=2
+      - name: Golden tests — 11g (hold-out, non-CDB)
+        run: |
+          export ODR_GOLDEN=$PWD/g/20261103T003005Z ODR_GOLDEN2=$PWD/g/20261103T025745Z
+          cargo test --locked --release -p odr-core --test golden_lab -- lab2_second_version_reads_like_oracle
+          cargo test --locked --release -p odr-cli --test golden_cli -- scavenge_type_candidates_never_name_a_wrong_type
+
   licenses:
     runs-on: ubuntu-latest
     steps:

@@ -1947,7 +1947,11 @@ fn lab2_second_version_reads_like_oracle() {
         }
         checked += 1;
     }
-    assert_eq!(checked, 15, "ODR tables");
+    // Every table Oracle counted in `rowcounts.txt` must have been read: 15 in
+    // the 2026-10 sets, 18 since the corpus gained T_LOB_BASIC/T_LOB_SECURE/
+    // T_COMPRESS (21c/11g rebuilt 2026-11-03). Never fewer than the original 15.
+    assert_eq!(checked, counts.len(), "ODR tables (Oracle rowcounts.txt)");
+    assert!(checked >= 15, "ODR tables: {checked}");
     assert!(
         journal_cells >= 100_000,
         "T_JOURNAL cells compared: {journal_cells}"

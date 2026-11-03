@@ -1,0 +1,45 @@
+name: Trial
+# Runs the evaluator's self-checking trial scripts against a PUBLISHED release,
+# exactly as an evaluator would: download the release archive + the golden set
+# from this repository's Releases, verify SHA-256, run every command, compare
+# every number (try_odr.ps1 on a real Windows runner, try_odr.sh on Linux).
+# Triggered after a release is published, or by hand for any tag.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to try (e.g. v0.3.0-alpha)"
+        required: true
+  workflow_run:
+    workflows: [Release]
+    types: [completed]
+
+permissions:
+  contents: read
+
+jobs:
+  trial:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    name: trial-${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      # Private releases: the scripts download with `gh` (GH_TOKEN) — same path as an invited reader.
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ github.event.inputs.tag || github.event.workflow_run.head_branch }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.event.workflow_run.head_branch }}
+      - name: try_odr.ps1 (Windows PowerShell 5.1)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          powershell -ExecutionPolicy Bypass -File docs/field/try_odr.ps1 -Dir "$env:RUNNER_TEMP\odr-trial" -Tag $env:TAG
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: try_odr.sh (Linux)
+        if: runner.os == 'Linux'
+        run: bash docs/field/try_odr.sh "$RUNNER_TEMP/odr-trial" "$TAG"

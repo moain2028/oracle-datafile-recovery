@@ -30,10 +30,9 @@
 
 | Release | الإصدار | ملف SYSTEM | ملفات الجداول |
 |---|---|---|---|
-| `golden-26ai-20261018` | Oracle AI Database 26ai Free (23.26) | `FREE_FREEPDB1_system01.dbf` (ملف 12، bigfile) | `odr_odr_assm01/mssm01/big01.dbf` (16/17/18) |
-| `golden-21c-20261021` | Oracle 21c XE (21.3) | `XE_XEPDB1_system01.dbf` (ملف 9) | `odr_odr_assm01/mssm01/big01.dbf` (20/21/22) |
-| `golden-11g-20261021` | Oracle 11g XE (11.2, non-CDB) | `XE_system.dbf` (ملف 1) | `odr_odr_assm01/mssm01/big01.dbf` |
-| **`golden-26ai-20261024`** (الأحدث، v2) | 26ai Free | `FREE_FREEPDB1_system01.dbf` (ملف 12) | نفس الثلاثة (16/17/18) **+ جداول LOB وضغط**: `T_LOB_BASIC`، `T_LOB_SECURE`، `T_COMPRESS` — 147,661 قيمة |
+| **`golden-26ai-20261103`** (الحالية) | Oracle AI Database 26ai Free (23.26) | `FREE_FREEPDB1_system01.dbf` (ملف 12، bigfile) | `odr_odr_assm01/mssm01/big01.dbf` (16/17/18) — 18 جدولاً **منها LOB وضغط**: `T_LOB_BASIC`، `T_LOB_SECURE`، `T_COMPRESS` — 147,661 قيمة |
+
+> المجموعات القديمة (`golden-26ai-20261018`، `golden-26ai-20261024`، `golden-21c-20261021`، `golden-11g-20261021`) كانت على الحساب السابق وفُقدت معه. أُعيد بناء 26ai من الصفر في 2026-11-03 بنفس الصورة ونفس سكربتات `lab/`؛ 21c و11g لم يُعَد بناؤهما بعد.
 
 داخل كل مجموعة: `datafiles/` (النسخ السليمة بعد `SHUTDOWN IMMEDIATE`، `dbv` نظيف)، `rows.psv` (كل قيمة كما طبعها أوراكل بـ `DUMP`)، `meta/rowids.psv` (ROWID كل صف)، `meta/rowcounts.txt`، تفريغات كتل (`traces/`).
 
@@ -42,8 +41,8 @@
 ## 3. أول تجربة (5 دقائق)
 
 ```powershell
-# Windows PowerShell — داخل مجلد الـ zip المفكوك، ومجلد golden مفكوك في G:\golden\20261018T080131Z
-$G = "G:\golden\20261018T080131Z\datafiles"
+# Windows PowerShell — داخل مجلد الـ zip المفكوك، ومجلد golden مفكوك في G:\golden\20261103T003005Z
+$G = "G:\golden\20261103T003005Z\datafiles"
 
 # أ) ماذا في الملف؟ (قراءة فقط؛ حجم الكتلة وترتيب البايتات يُقرآن من رأس الملف — ملف غير أوراكل يُرفض لا يُوصَف تالفاً)
 .\odr.exe scan $G\odr_odr_assm01.dbf
@@ -87,16 +86,17 @@ $G = "G:\golden\20261018T080131Z\datafiles"
 .\odr.exe extract $G\FREE_FREEPDB1_system01.dbf dmg\wiped.dbf --table ODR.T_JOURNAL --out out\wiped --assume "dmg\wiped.dbf=file:16,ts:7,rfile:16,bs:8192"
 ```
 
-**ما تتوقعه (مقاس على 26ai، بذرة 7):**
+**ما تتوقعه (مقاس على `golden-26ai-20261103`، بذرة 7، جدول `T_JOURNAL` = 20,000 صف):**
 
-| التلف | verified صحيحة | خاطئة بوسم verified | ماذا يحدث للباقي |
+| التلف | verified | خاطئة بوسم verified | ماذا يحدث للباقي |
 |---|---|---|---|
-| bitrot 400 | 18,735 | **0** | 1,265 rejected بسبب `block integrity: ChecksumFail` |
-| torn 200 | 19,721 | **0** | 279 rejected (`TailMismatch`) |
-| zero 200 | 19,166 | **0** | 834 في كتل مصفَّرة (في `report.json` → `skipped_blocks`) |
-| swap 20 | ~15,000 | **0** | الكتل المتبادلة كلها مرفوضة: `header says block X but read at Y` |
-| ransom | 0 verified، 17,906 inferred | **0** | الكتل المشفَّرة `integrity: Foreign` |
-| forge 60 | ~18,000 | **≈ 0.2%** | التزوير داخل قيمة عمود مع checksum صحيح **لا يُكشف من الكتلة وحدها** — هذا حدّ معلَن (انظر §6) |
+| bitrot 400 | 18,737 | **0** | 1,263 rejected بسبب `block integrity: ChecksumFail` |
+| torn 200 (`--blocks 3204:3327`) | 5,431 | **0** | 5,825 inferred (صفوف تحت حدّ التمزق، LV-065، 0 خاطئة) + 8,744 rejected (`TailMismatch`) |
+| zero 200 | 19,159 | **0** | 841 صفاً في كتل مصفَّرة (في `report.json` → `skipped_blocks`: `integrity: Zeroed`) |
+| swap 20 | 14,956 | **0** | 5,044 rejected: `block structure: header says block X but it was read at block Y` |
+| ransom + `--assume` | 0 | **0** | 17,901 inferred (0 خاطئة)؛ الكتل المشفَّرة `integrity: Foreign` |
+| رأس ممسوح + `--assume` | 0 | **0** | 20,000 inferred (0 خاطئة) — الهوية من المشغّل لا من الملف |
+| forge 60 | 18,174 | **32 (0.16%)** | 1,826 rejected. التزوير داخل قيمة عمود مع إعادة حساب checksum **لا يُكشف من الكتلة وحدها** — حدّ معلَن (§6) |
 
 للمقارنة الآلية: اطرح `verified.csv` التالف من النظيف — أي سطر زائد = قيمة خاطئة. (في المستودع سكربت الاختبار الذهبي يفعل ذلك.)
 
@@ -110,7 +110,7 @@ $G = "G:\golden\20261018T080131Z\datafiles"
 ## 6. ما لا تفعله الأداة اليوم (بصراحة)
 
 - **LOB** (CLOB/BLOB): مدعوم — داخل الصف وخارجه (BasicFile وSecureFile)؛ يُجمَّع من كتل مقطع الـ LOB ولا يُخرَج ناقصاً أبداً: أي كتلة تالفة أو طولٌ لا يطابق المحدِّد ⇒ الصف مرفوض بالسبب (LV-068/070). مقاس على 26ai فقط.
-- **الضغط BASIC**: يُفك من جدول الرموز 9ir2 (LV-071، 2000/2000 على 26ai — في البناء بعد v0.2.0-alpha). صيغ أخرى (OLTP/HCC) تُرفض صراحةً (LV-069).
+- **الضغط BASIC**: يُفك من جدول الرموز 9ir2 (LV-071، 2000/2000 على 26ai — منذ v0.3.0-alpha). صيغ أخرى (OLTP/HCC) تُرفض صراحةً (LV-069).
 - **بلا SYSTEM** (القاموس مفقود): `odr scavenge <dbf> --out out\scav` يُخرج `OBJ_<id>/inferred.csv` بأعمدة `COL_<n>` ونوع مستدل موسوم (LV-066)؛ **لا شيء فيه verified** لأن لا قاموس يشهد. أنواع INTERVAL/TSTZ/BINARY_*/NCHAR لم تُضف بعد للمرشّحين.
 - **TDE** (التشفير الحقيقي): يحتاج wallet العميل؛ خارج النطاق.
 - **تزوير داخل قيمة مع checksum صحيح**: غير قابل للكشف من الكتلة وحدها؛ يحتاج تحققاً عبر الفهارس (M6).

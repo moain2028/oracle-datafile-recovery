@@ -4,14 +4,14 @@
 # commands and COMPARES every number with what Oracle itself says. PASS/FAIL per step.
 # Never writes to the source datafiles.
 #
-#   bash try_odr.sh [DIR] [TAG]          # default DIR=./odr-trial, TAG=v0.2.0-alpha
+#   bash try_odr.sh [DIR] [TAG]          # default DIR=./odr-trial, TAG=v0.3.0-alpha
 #   ODR_TOOLDIR=/path/with/odr bash try_odr.sh DIR   # testing: use local binaries, skip tool download
 #
 # Needs: curl, tar, sha256sum, python3 (CSV checks), ~700 MB disk.
 set -u
-DIR="${1:-$PWD/odr-trial}"; TAG="${2:-v0.2.0-alpha}"; GOLDEN="golden-26ai-20261024"
-REPO="https://github.com/moain2026/oracle-datafile-recovery"
-TGZ="odr_golden_26ai_v2_20261024T085903Z.tar.gz"; TAR="odr-$TAG-x86_64-unknown-linux-gnu.tar.gz"
+DIR="${1:-$PWD/odr-trial}"; TAG="${2:-v0.3.0-alpha}"; GOLDEN="golden-26ai-20261103"
+REPO="https://github.com/moain2028/new-pro2"
+TGZ="odr_golden_26ai_20261103T003005Z.tar.gz"; TAR="odr-$TAG-x86_64-unknown-linux-gnu.tar.gz"
 PASS=0; FAIL=0
 step() { printf '\n== %s\n' "$1"; }
 ok()   { PASS=$((PASS+1)); printf '  PASS  %s\n' "$1"; }
@@ -21,10 +21,10 @@ check(){ if [ "$1" = 0 ]; then ok "$2"; else bad "$2"; fi; }
 # invited reader) or with ODR_TOKEN=<read token>; otherwise place the files in DIR by hand.
 get()  { [ -f "$2" ] && { echo "  (exists) $2"; return; }; echo "  downloading $(basename "$2")"
          if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
-           gh release download "$3" -R moain2026/oracle-datafile-recovery -p "$(basename "$2")" -O "$2" 2>/dev/null && return
+           gh release download "$3" -R moain2028/new-pro2 -p "$(basename "$2")" -O "$2" 2>/dev/null && return
          fi
          if [ -n "${ODR_TOKEN:-}" ]; then
-           url=$(curl -sS -H "Authorization: Bearer $ODR_TOKEN" "https://api.github.com/repos/moain2026/oracle-datafile-recovery/releases/tags/$3" | grep -o '"url": *"https://api.github.com/repos/[^"]*/assets/[0-9]*"[^}]*"name": *"'"$(basename "$2")"'"' | head -1 | grep -o 'https://api.github.com/repos/[^"]*/assets/[0-9]*')
+           url=$(curl -sS -H "Authorization: Bearer $ODR_TOKEN" "https://api.github.com/repos/moain2028/new-pro2/releases/tags/$3" | grep -o '"url": *"https://api.github.com/repos/[^"]*/assets/[0-9]*"[^}]*"name": *"'"$(basename "$2")"'"' | head -1 | grep -o 'https://api.github.com/repos/[^"]*/assets/[0-9]*')
            [ -n "$url" ] && curl -sSL -H "Authorization: Bearer $ODR_TOKEN" -H "Accept: application/octet-stream" -o "$2" "$url" && return
          fi
          echo "  cannot download $(basename "$2"): private release — run 'gh auth login' as an invited reader, set ODR_TOKEN, or copy the file into $DIR"; exit 1; }
@@ -48,11 +48,11 @@ if [ -z "${ODR_TOOLDIR:-}" ]; then
   [ -x "odr-$TAG-x86_64-unknown-linux-gnu/odr" ] || tar -xzf "$TAR"
   TOOLDIR="$PWD/odr-$TAG-x86_64-unknown-linux-gnu"
 else TOOLDIR="$ODR_TOOLDIR"; fi
-get "$REPO/releases/download/$GOLDEN/$TGZ" "$TGZ" "$GOLDEN"; get "$REPO/releases/download/$GOLDEN/odr_golden_26ai_v2.sha256" odr_golden_26ai_v2.sha256 "$GOLDEN"
-sha "$TGZ" odr_golden_26ai_v2.sha256
-[ -f 20261024T085903Z/datafiles/odr_odr_assm01.dbf ] || { echo "  extracting $TGZ (≈ 480 MB)"; tar -xzf "$TGZ" || exit 1; }
+get "$REPO/releases/download/$GOLDEN/$TGZ" "$TGZ" "$GOLDEN"; get "$REPO/releases/download/$GOLDEN/odr_golden_26ai_20261103T003005Z.tar.gz.sha256" odr_golden_26ai_20261103T003005Z.tar.gz.sha256 "$GOLDEN"
+sha "$TGZ" odr_golden_26ai_20261103T003005Z.tar.gz.sha256
+[ -f 20261103T003005Z/datafiles/odr_odr_assm01.dbf ] || { echo "  extracting $TGZ (≈ 480 MB)"; tar -xzf "$TGZ" || exit 1; }
 ODR="$TOOLDIR/odr"; CORRUPT="$TOOLDIR/odr-corrupt"
-G="$PWD/20261024T085903Z/datafiles"; S="$G/FREE_FREEPDB1_system01.dbf"; A="$G/odr_odr_assm01.dbf"
+G="$PWD/20261103T003005Z/datafiles"; S="$G/FREE_FREEPDB1_system01.dbf"; A="$G/odr_odr_assm01.dbf"
 ver=$("$ODR" --version); check "$(printf '%s' "$ver" | grep -Eq '^odr [0-9]+\.[0-9]+\.[0-9]+'; echo $?)" "tool runs: $ver"
 sha_before=$(sha256sum "$A" | awk '{print $1}')
 rm -rf out dmg
@@ -87,16 +87,16 @@ done
 step "5. Damage drills (deterministic, original untouched)"
 mkdir -p dmg
 "$CORRUPT" --input "$A" --output dmg/bitrot.dbf --block-size 8192 --seed 7 --op bitrot:400 >/dev/null 2>&1; check $? "odr-corrupt bitrot:400 seed 7"
-run_extract out/bitrot "$S" dmg/bitrot.dbf --table ODR.T_JOURNAL; expect 18744 0 1256 2 "bitrot → T_JOURNAL"
+run_extract out/bitrot "$S" dmg/bitrot.dbf --table ODR.T_JOURNAL; expect 18737 0 1263 2 "bitrot → T_JOURNAL"
 wrong=$(comm -13 <(sort out/journal/verified.csv) <(sort out/bitrot/verified.csv) | wc -l)
 check "$([ "$wrong" = 0 ]; echo $?)" "verified rows from the damaged file that are NOT in the clean output: $wrong (must be 0)"
-n=$(grep -c 'block integrity: ChecksumFail$' out/bitrot/rejected.csv); check "$([ "$n" = 1256 ]; echo $?)" "rejection reason = 'block integrity: ChecksumFail' ($n rows)"
-"$CORRUPT" --input "$A" --output dmg/lobchunk.dbf --block-size 8192 --seed 7 --op bitrot:1 --blocks 3935:3935 >/dev/null 2>&1
-run_extract out/lobchunk "$S" dmg/lobchunk.dbf --table ODR.T_LOB_BASIC; expect 5 0 1 2 "1 flipped bit in LOB chunk block 3935 → T_LOB_BASIC"
-n=$(wc -l < out/lobchunk/rejected.csv); reason=$(grep -o 'column 2: LOB out of line could not be assembled: Integrity { rdba: 67112799, status: ChecksumFail } (LV-070)' out/lobchunk/rejected.csv | wc -l)
-check "$([ "$n" = 2 ] && [ "$reason" = 1 ] && grep -q '^16,[0-9]*,[0-9]*,6,' out/lobchunk/rejected.csv; echo $?)" "only row 6 rejected, reason cites ChecksumFail on rdba 67112799 (LV-070)"
+n=$(grep -c 'block integrity: ChecksumFail$' out/bitrot/rejected.csv); check "$([ "$n" = 1263 ]; echo $?)" "rejection reason = 'block integrity: ChecksumFail' ($n rows)"
+"$CORRUPT" --input "$A" --output dmg/lobchunk.dbf --block-size 8192 --seed 7 --op bitrot:1 --blocks 3860:3860 >/dev/null 2>&1
+run_extract out/lobchunk "$S" dmg/lobchunk.dbf --table ODR.T_LOB_BASIC; expect 5 0 1 2 "1 flipped bit in LOB chunk block 3860 → T_LOB_BASIC"
+n=$(wc -l < out/lobchunk/rejected.csv); reason=$(grep -o 'column 2: LOB out of line could not be assembled: Integrity { rdba: 67112724, status: ChecksumFail } (LV-070)' out/lobchunk/rejected.csv | wc -l)
+check "$([ "$n" = 2 ] && [ "$reason" = 1 ] && grep -q '^16,[0-9]*,[0-9]*,6,' out/lobchunk/rejected.csv; echo $?)" "only row 6 rejected, reason cites ChecksumFail on rdba 67112724 (LV-070)"
 
-step "6. Compressed table (COMPRESS BASIC): v0.2.0-alpha refuses it, later builds decode it (LV-071)"
+step "6. Compressed table (COMPRESS BASIC): v0.2.0-alpha refused it, v0.3.0-alpha decodes it (LV-071)"
 msg=$("$ODR" extract "$S" "$A" --table ODR.T_COMPRESS --out out/compress 2>&1); code=$?
 if [ "$code" = 1 ]; then
   ok "T_COMPRESS exit code 1: refused, not guessed"

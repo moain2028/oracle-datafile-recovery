@@ -32,7 +32,7 @@ ODR_GOLDEN=$PWD/lab/out/golden/<run> cargo test -p odr-core --test golden_lab --
 ```bash
 # كل أمر Bash يبدأ من /home/user — ابدأ دائماً بـ cd /home/user/webapp
 T=<token>            # repo + workflow
-printf 'https://moain2026:%s@github.com\n' "$T" > ~/.git-credentials && chmod 600 ~/.git-credentials
+printf 'https://moain2028:%s@github.com\n' "$T" > ~/.git-credentials && chmod 600 ~/.git-credentials
 git config --global credential.helper store
 echo "$T" | gh auth login --with-token     # تحذير read:org غير مهم
 git fetch origin && git checkout main && git pull
@@ -96,8 +96,9 @@ docker start odr-oracle    # لإعادة الاستخدام
 **بديل أسرع:** حمّل المجموعة الجاهزة من GitHub Release (62 MB):
 ```bash
 cd /home/user/webapp/lab && mkdir -p out/golden && cd out/golden
-gh release download golden-26ai-20261018 --repo moain2026/oracle-datafile-recovery -p '*.tar.gz' -p '*.sha256'
-sha256sum -c odr_golden.sha256 && tar -xzf odr_golden_26ai_*.tar.gz && ls
+gh release download golden-26ai-20261103 --repo moain2028/new-pro2 -p '*.tar.gz' -p '*.sha256'
+sha256sum -c odr_golden_26ai_20261103T003005Z.tar.gz.sha256 && tar -xzf odr_golden_26ai_20261103T003005Z.tar.gz && ls
+# (the 2026-10 sets lived on the suspended moain2026 account and are gone; 26ai rebuilt 2026-11-03)
 ```
 
 ## 5. حقائق هذه المجموعة الذهبية (run `20261018T080131Z`)

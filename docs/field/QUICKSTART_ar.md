@@ -1,6 +1,6 @@
 # ODR — جرّبها في 10 دقائق (Windows)
 
-> صفحة واحدة. أمر واحد يكفي (أو ثلاثة باليد). كل رقم هنا مقاس فعلاً على الملفات المذكورة (26ai، مجموعة `golden-26ai-20261024`).
+> صفحة واحدة. أمر واحد يكفي (أو ثلاثة باليد). كل رقم هنا مقاس فعلاً على الملفات المذكورة (26ai، مجموعة `golden-26ai-20261103`، أُعيد بناؤها من الصفر في 2026-11-03).
 > الأداة **لا تكتب أبداً** على ملف المصدر. العُدّة الكاملة في `TRIAL_KIT_ar.md`.
 
 ## الأسرع: أمر واحد يفعل كل شيء ويحكم بنفسه
@@ -16,7 +16,7 @@ powershell -ExecutionPolicy Bypass -File try_odr.ps1 -Dir C:\odr-trial
 bash try_odr.sh ~/odr-trial
 ```
 
-النتيجة المتوقعة في السطر الأخير: `RESULT: 32 passed, 0 failed` (قُست بالنسخة المنشورة `v0.2.0-alpha`). أي FAIL = أرسل لنا المخرجات كاملة. الأقسام التالية تشرح ما يفعله السكربت خطوة خطوة لمن يريد أن يكتب الأوامر بيده.
+النتيجة المتوقعة في السطر الأخير: `RESULT: 32 passed, 0 failed` (قُست بالنسخة `v0.3.0-alpha` على Linux وعلى Windows حقيقي في CI). أي FAIL = أرسل لنا المخرجات كاملة. الأقسام التالية تشرح ما يفعله السكربت خطوة خطوة لمن يريد أن يكتب الأوامر بيده.
 
 ## 0. حمّل (مرة واحدة)
 
@@ -26,8 +26,8 @@ bash try_odr.sh ~/odr-trial
 
 | ماذا | الملف | الحجم |
 |---|---|---|
-| الأداة | `odr-v0.2.0-alpha-x86_64-pc-windows-msvc.zip` (فيه `odr.exe` + `odr-corrupt.exe`) | ≈ 1 MB |
-| ملفات التجربة | Release `golden-26ai-20261024` → `odr_golden_26ai_v2_20261024T085903Z.tar.gz` | 62 MB (≈ 480 MB مفكوكة) |
+| الأداة | `odr-v0.3.0-alpha-x86_64-pc-windows-msvc.zip` (فيه `odr.exe` + `odr-corrupt.exe`) | ≈ 1 MB |
+| ملفات التجربة | Release `golden-26ai-20261103` → `odr_golden_26ai_20261103T003005Z.tar.gz` | 62 MB (≈ 480 MB مفكوكة) |
 
 فكّ الاثنين. على Windows يفك `tar -xzf` من PowerShell مباشرة. تحقق من `.sha256` بجانب كل ملف إن أردت.
 
@@ -39,12 +39,12 @@ bash try_odr.sh ~/odr-trial
 
 ```powershell
 # داخل مجلد الـ zip المفكوك. عدّل المسار:
-$G = "G:\golden\20261024T085903Z\datafiles"
+$G = "G:\golden\20261103T003005Z\datafiles"
 $S = "$G\FREE_FREEPDB1_system01.dbf"
 
 # (أ) القاموس — أي جداول في هذه الملفات؟
 .\odr.exe dict $S $G\odr_odr_assm01.dbf $G\odr_odr_mssm01.dbf $G\odr_odr_big01.dbf
-#   تتوقع: "71876 objects · 2563 tables · 0 issues" ثم 18 جدولاً في مخطط ODR
+#   تتوقع: "71862 objects · 2563 tables · 0 issues" ثم 18 جدولاً في مخطط ODR
 #   (T_JOURNAL, T_LOB_BASIC, T_LOB_SECURE, T_COMPRESS, T_CL_EMP cluster, ...)
 
 # (ب) استخراج جدول نظيف — 20,000 قيد يومية بالعربية
@@ -67,14 +67,14 @@ mkdir dmg
 # 400 كتلة عشوائية فيها bit rot — حتمي: البذرة 7 تعطي نفس التلف دائماً. الأصل لا يُمسّ.
 .\odr-corrupt.exe --input $G\odr_odr_assm01.dbf --output dmg\bitrot.dbf --block-size 8192 --seed 7 --op bitrot:400
 .\odr.exe extract $S dmg\bitrot.dbf --table ODR.T_JOURNAL --out out\bitrot
-#   تتوقع: verified 18744 · rejected 1256   ورمز خروج 2 (= فيه مرفوض، وهذا طبيعي)
+#   تتوقع: verified 18737 · rejected 1263   ورمز خروج 2 (= فيه مرفوض، وهذا طبيعي)
 #   كل سطر في rejected.csv ينتهي بالسبب: block integrity: ChecksumFail
 
-# بِت واحد مقلوب داخل الكتلة 3935 (أولى كتلتي الـ CLOB الكبير في الصف 6)
-.\odr-corrupt.exe --input $G\odr_odr_assm01.dbf --output dmg\lobchunk.dbf --block-size 8192 --seed 7 --op bitrot:1 --blocks 3935:3935
+# بِت واحد مقلوب داخل الكتلة 3860 (أولى كتلتي الـ CLOB الكبير في الصف 6)
+.\odr-corrupt.exe --input $G\odr_odr_assm01.dbf --output dmg\lobchunk.dbf --block-size 8192 --seed 7 --op bitrot:1 --blocks 3860:3860
 .\odr.exe extract $S dmg\lobchunk.dbf --table ODR.T_LOB_BASIC --out out\lobchunk
 #   تتوقع: verified 5 · rejected 1 — الصف 6 وحده مرفوض وسببه:
-#   column 2: LOB out of line could not be assembled: Integrity { rdba: 67112799, status: ChecksumFail } (LV-070)
+#   column 2: LOB out of line could not be assembled: Integrity { rdba: 67112724, status: ChecksumFail } (LV-070)
 #   (لا نُخرج LOB ناقصاً أبداً؛ باقي أعمدة الصف تبقى في السطر المرفوض لتراها)
 ```
 
@@ -100,7 +100,7 @@ Compare-Object (Get-Content out\journal\verified.csv) (Get-Content out\bitrot\ve
 
 ```powershell
 .\odr.exe extract $S $G\odr_odr_assm01.dbf --table ODR.T_COMPRESS --out out\compress
-#   تتوقع: verified 2000 · inferred 0 · rejected 0   ورمز خروج 0  (الإصدار v0.2.0-alpha يرفضه؛ ما بعده يفكّه — LV-071)
+#   تتوقع: verified 2000 · inferred 0 · rejected 0   ورمز خروج 0  (v0.2.0-alpha كان يرفضه؛ v0.3.0-alpha يفكّه — LV-071)
 ```
 
 ما ترفضه الأداة صراحةً (لا تخمّن): صيغ ضغط غير BASIC المقاسة (OLTP/HCC)، TDE (يحتاج wallet)، Hash cluster/IOT، وتزوير قيمة داخل كتلة مع checksum صحيح (حدّ معلَن، يحتاج فهارس — M6). بلا ملف SYSTEM استخدم `odr scavenge` (كل شيء يخرج inferred، لا verified).

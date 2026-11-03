@@ -1,0 +1,4 @@
+# SHA-1 thumbprint of the ODR code-signing certificate (public part: ODR-code-signing.cer).
+# verify.ps1 / verify.sh accept odr.exe / odr-corrupt.exe only if signed by exactly this certificate.
+# Subject: CN=ODR Oracle Datafile Recovery, O=moain2028   Valid: 2026-11-03 .. 2031-11-03
+BB1A79CC9C7820DCE331369270B8E46149550FFA

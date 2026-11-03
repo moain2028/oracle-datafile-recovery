@@ -1,5 +1,13 @@
 # Changelog
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
+
+## 0.5.0-alpha — 2026-11-03 (in progress)
+- **LV-074**: 11.2 LOB locator header `00 54 00 01` accepted; byte 6 bit 0x80 = UCS-2 CLOB data; locator/PROPS$ disagreement rejected. Before: every LOB row of 11g and AR8MSWIN1256 rejected; after: 24/24 LOB values equal Oracle on 5 databases.
+- Golden sets **18c** and **11g AR8MSWIN1256** (140,068 cells, 10,007 Arabic, 0 mismatches); CI `golden` job now runs 26ai, 21c, 11g, 18c, ar8.
+- **Code signing (free)**: odr.exe / odr-corrupt.exe Authenticode-signed in CI (self-issued ODR certificate, SHA-256, RFC 3161 timestamp). Thumbprint `BB1A79CC9C7820DCE331369270B8E46149550FFA`.
+- **integrity/** folder in every archive and the bundle: SHA256SUMS of every file, signed (`SHA256SUMS.p7s`), public `.cer`, `SIGNER.txt`, `verify.ps1`/`verify.sh`, optional `trust-certificate.ps1`. START_HERE.bat runs verify first. Update in place = unzip over the old folder.
+- **Legal**: LICENSE is now a full evaluation EULA (owner moain2028); `THIRD_PARTY_LICENSES.txt` generated from Cargo.lock by `tools/gen_third_party.py` (40 crates, CI checks it is current).
+
 ## [Unreleased]
 
 ## [0.4.0-alpha] - 2026-11-03

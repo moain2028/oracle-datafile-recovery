@@ -9,7 +9,7 @@ edition = "2024"
 rust-version = "1.99"
 license = "LicenseRef-Proprietary"
 repository = "https://github.com/moain2028/new-pro2"
-authors = ["moain2026"]
+authors = ["moain2028"]
 
 [workspace.dependencies]
 odr-core = { path = "crates/odr-core", version = "0.4.0" }

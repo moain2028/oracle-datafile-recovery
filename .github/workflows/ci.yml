@@ -32,6 +32,9 @@ jobs:
       - run: cargo fmt --all -- --check
       - name: Charset tables up to date
         run: python3 tools/gen_charsets.py --check
+      - name: THIRD_PARTY_LICENSES.txt up to date
+        if: matrix.os == 'ubuntu-latest'
+        run: python3 tools/gen_third_party.py --check
       - run: cargo clippy --workspace --all-targets --locked
       - run: cargo test --workspace --locked
       - run: cargo doc --workspace --no-deps --locked
@@ -45,7 +48,7 @@ jobs:
 
   golden:
     # The real proof: every golden test against Oracle's own truth on three
-    # versions (26ai, 21c, 11g). The sets live in this repository's private
+    # versions (26ai, 21c, 11g, 18c, ar8). The sets live in this repository's private
     # Releases (rebuilt 2026-11-03 from lab/). Without this job the golden
     # tests skip silently and CI proves nothing about Oracle data.
     runs-on: ubuntu-latest
@@ -57,10 +60,10 @@ jobs:
         with:
           toolchain: "1.99.0"
       - uses: Swatinem/rust-cache@v2
-      - name: Download golden sets (26ai, 21c, 11g) and verify SHA-256
+      - name: Download golden sets (26ai, 21c, 11g, 18c, ar8) and verify SHA-256
         run: |
           mkdir -p g && cd g
-          for t in golden-26ai-20261103 golden-21c-20261103 golden-11g-20261103; do
+          for t in golden-26ai-20261103 golden-21c-20261103 golden-11g-20261103 golden-18c-20261103 golden-ar8-20261103; do
             gh release download "$t" -R "${{ github.repository }}" -p '*.tar.gz' -p '*.sha256'
           done
           for s in *.tar.gz.sha256; do sha256sum -c "$s"; done
@@ -74,7 +77,14 @@ jobs:
         run: |
           export ODR_GOLDEN=$PWD/g/20261103T003005Z ODR_GOLDEN2=$PWD/g/20261103T025745Z
           cargo test --locked --release -p odr-core --test golden_lab -- lab2_second_version_reads_like_oracle
-          cargo test --locked --release -p odr-cli --test golden_cli -- scavenge_type_candidates_never_name_a_wrong_type
+          cargo test --locked --release -p odr-cli --test golden_cli -- scavenge_type_candidates_never_name_a_wrong_type lab2_lob_tables_match_oracle
+      - name: Golden tests — 18c and 11g AR8MSWIN1256 (hold-out)
+        run: |
+          for r in 20261103T050936Z 20261103T044428Z; do
+            export ODR_GOLDEN=$PWD/g/20261103T003005Z ODR_GOLDEN2=$PWD/g/$r
+            cargo test --locked --release -p odr-core --test golden_lab -- lab2_second_version_reads_like_oracle
+            cargo test --locked --release -p odr-cli --test golden_cli -- scavenge_type_candidates_never_name_a_wrong_type lab2_lob_tables_match_oracle
+          done
 
   licenses:
     runs-on: ubuntu-latest

@@ -259,20 +259,20 @@ pub fn triage(r: &Report, file_name: &str) -> Triage {
 
     let (verdict_en, verdict_ar) = match band {
         Band::Excellent => (
-            format!("The file is healthy or nearly so: {}‰ of used blocks are clean. Standard extraction should verify every row.", clean_used_milli),
-            format!("الملف سليم أو شبه سليم: {}‰ من الكتل المستخدمة نظيفة. الاستخراج العادي سيوثّق كل الصفوف.", clean_used_milli),
+            format!("The file is healthy or nearly so: {clean_used_milli}‰ of used blocks are clean. Standard extraction should verify every row."),
+            format!("الملف سليم أو شبه سليم: {clean_used_milli}‰ من الكتل المستخدمة نظيفة. الاستخراج العادي سيوثّق كل الصفوف."),
         ),
         Band::Good => (
-            format!("Isolated damage: {}‰ of used blocks are clean. Most tables extract fully; rows in damaged blocks are rejected or inferred, never guessed.", clean_used_milli),
-            format!("تلف معزول: {}‰ من الكتل المستخدمة نظيفة. أغلب الجداول تُستخرج كاملة؛ صفوف الكتل التالفة تُرفض أو تُستنتج ولا تُخمَّن.", clean_used_milli),
+            format!("Isolated damage: {clean_used_milli}‰ of used blocks are clean. Most tables extract fully; rows in damaged blocks are rejected or inferred, never guessed."),
+            format!("تلف معزول: {clean_used_milli}‰ من الكتل المستخدمة نظيفة. أغلب الجداول تُستخرج كاملة؛ صفوف الكتل التالفة تُرفض أو تُستنتج ولا تُخمَّن."),
         ),
         Band::Partial => (
             format!("Significant loss or lost identity: {}‰ of used blocks are clean{}. Expert extraction is worthwhile; expect inferred rows and gaps.", clean_used_milli, if identity_known { "" } else { ", and the file header is gone" }),
             format!("خسارة كبيرة أو هوية ضائعة: {}‰ من الكتل المستخدمة نظيفة{}. الاستخراج بخبير يستحق؛ توقّع صفوفاً مستنتَجة وفجوات.", clean_used_milli, if identity_known { "" } else { "، ورأس الملف ضائع" }),
         ),
         Band::Poor => (
-            format!("Most data is unreadable: only {}‰ of used blocks are clean. Salvage what remains with scavenge; look for other copies.", clean_used_milli),
-            format!("أغلب البيانات غير قابلة للقراءة: {}‰ فقط من الكتل المستخدمة نظيفة. أنقذ ما بقي بـ scavenge؛ ابحث عن نسخ أخرى.", clean_used_milli),
+            format!("Most data is unreadable: only {clean_used_milli}‰ of used blocks are clean. Salvage what remains with scavenge; look for other copies."),
+            format!("أغلب البيانات غير قابلة للقراءة: {clean_used_milli}‰ فقط من الكتل المستخدمة نظيفة. أنقذ ما بقي بـ scavenge؛ ابحث عن نسخ أخرى."),
         ),
         Band::Lost => (
             "Effectively unrecoverable from this file alone. Do not spend extraction effort here before locating another copy, a backup or an export.".into(),

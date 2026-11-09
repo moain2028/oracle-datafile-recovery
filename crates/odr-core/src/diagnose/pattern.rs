@@ -58,6 +58,25 @@ pub enum FindingCode {
     /// More blocks on disk than the header declares (grown file or wrong
     /// header) — informational.
     SizeMismatch,
+    /// Valid header/tail/checksum, ciphertext-like payload with no
+    /// decodable structure: header-preserving ransomware (panel §1.1).
+    PayloadScrambled,
+    /// Physically valid blocks whose SCN is far below their object's
+    /// median: lost writes / mixed restore (panel §1.4).
+    StaleBlocks,
+    /// The same `rdba` at two positions (panel §1.5).
+    DuplicateBlocks,
+    /// The header's block size disagrees with the signature vote
+    /// (panel §1.6) — informational.
+    HeaderBlocksizeMismatch,
+    /// Fewer than 100 % of used blocks carry a checksum: bit rot cannot be
+    /// detected by checksum on the rest (panel §1.2).
+    ChecksumCoverageLow,
+    /// The stale-SCN / duplicate-rdba pass did not run (witness cap).
+    ConsistencyPassSkipped,
+    /// Foreign bytes at the very end of the file: ransomware footer or an
+    /// appended note (panel §1.7).
+    TailFooter,
 }
 
 /// One interpreted finding.
@@ -83,6 +102,11 @@ pub struct Finding {
     pub recovery_ar: String,
     /// Oracle errors a running instance would have raised on these blocks.
     pub oracle_errors: Vec<String>,
+    /// Machine-readable measured parameters (e.g. ransomware geometry:
+    /// `head_bytes`, `stride_blocks`, `span_blocks`). Never a family name
+    /// — the panel (§1.10) rejected attribution from layout alone.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub parameters: Vec<(String, u64)>,
 }
 
 /// A span of consecutive damaged blocks regardless of per-block code, with
@@ -235,6 +259,35 @@ pub fn findings(r: &Report) -> Vec<Finding> {
             recovery_en: "Block size and byte order were inferred from the blocks themselves. Rows can still be extracted, but the file's identity (file#, tablespace) must be supplied with --assume and every row from it is reported as inferred, never verified.".into(),
             recovery_ar: "حجم الكتلة وترتيب البايتات استُنتجا من الكتل نفسها. يمكن استخراج الصفوف، لكن هوية الملف (رقمه ومساحته) تُعطى بـ --assume وكل صف منه يُبلَّغ مستنتَجاً لا موثَّقاً.".into(),
             oracle_errors: vec!["ORA-01122".into(), "ORA-01110".into(), "ORA-01210".into()],
+            parameters: vec![],
+        });
+    }
+
+    // --- Header block size vs. signature vote (panel §1.6) ---------------
+    if r.layout.source == super::LayoutSource::FileHeader
+        && let Some(inf) = &r.layout.inference
+        && let Some(best) = inf.candidates.first()
+        && inf.accepted
+        && best.block_size != r.layout.block_size
+    {
+        out.push(Finding {
+            code: FindingCode::HeaderBlocksizeMismatch,
+            severity: Severity::Info,
+            confidence_milli: 700,
+            blocks: 0,
+            evidence: vec![format!(
+                "kcvfh declares block size {}; the self-addressing vote prefers {} ({} of {} blocks self-addressed)",
+                r.layout.block_size, best.block_size, best.self_addressed, best.examined
+            )],
+            cause_en: "The header and the body disagree about the block size: a header transplanted from another file, or a body rewritten at a different size. The header's value was used.".into(),
+            cause_ar: "الرأس والجسم يختلفان على حجم الكتلة: رأس منقول من ملف آخر، أو جسم أُعيدت كتابته بحجم مختلف. استُخدمت قيمة الرأس.".into(),
+            recovery_en: "Re-run with --block-size set to the voted value and compare the damage counts; the layout with fewer damaged blocks is the real one.".into(),
+            recovery_ar: "أعد التشغيل بـ --block-size على القيمة المصوَّت لها وقارن عدد التالف؛ التخطيط الأقل تلفاً هو الحقيقي.".into(),
+            oracle_errors: vec!["ORA-27047".into()],
+            parameters: vec![
+                ("header_block_size".into(), bs),
+                ("voted_block_size".into(), u64::try_from(best.block_size).unwrap_or(0)),
+            ],
         });
     }
 
@@ -271,6 +324,7 @@ pub fn findings(r: &Report) -> Vec<Finding> {
                 recovery_en: "Everything beyond the end is gone unless another copy exists. Blocks before the cut are judged on their own merits.".into(),
                 recovery_ar: "كل ما بعد النهاية ضائع ما لم توجد نسخة أخرى. الكتل قبل القطع تُحكم كلٌّ بدليلها.".into(),
                 oracle_errors: vec!["ORA-27046".into(), "ORA-01122".into(), "ORA-01110".into()],
+                parameters: vec![("missing_blocks".into(), missing)],
             });
         } else if on_disk > d {
             out.push(Finding {
@@ -284,6 +338,7 @@ pub fn findings(r: &Report) -> Vec<Finding> {
                 recovery_en: "Informational. Extra blocks are scanned like any other.".into(),
                 recovery_ar: "معلومة فقط. الكتل الزائدة تُمسح كغيرها.".into(),
                 oracle_errors: vec![],
+                parameters: vec![],
             });
         }
     }
@@ -309,11 +364,15 @@ pub fn findings(r: &Report) -> Vec<Finding> {
                     ),
                     format!("healthy Oracle blocks never exceed 7.68 bits/byte (LV-077); random bytes pass the header-format test ~1/16 of the time, which explains the interleaved checksum/torn verdicts; {n_enc_total} encrypted blocks in the file"),
                 ],
-                cause_en: "Ransomware. Most families encrypt only the first N kilobytes or megabytes of large files for speed — exactly the region that holds the OS block, the file header and the first space-management blocks.".into(),
-                cause_ar: "فدية. أغلب العائلات تشفّر أول N كيلوبايت/ميغابايت من الملفات الكبيرة فقط للسرعة — وهي بالضبط منطقة رأس الملف وأولى كتل إدارة المساحة.".into(),
+                cause_en: "Ransomware. Most families encrypt only the first N kilobytes or megabytes of large files for speed — exactly the region that holds the OS block, the file header and the first space-management blocks. The measured head size is reported as a parameter; no family is named from layout alone.".into(),
+                cause_ar: "فدية. أغلب العائلات تشفّر أول N كيلوبايت/ميغابايت من الملفات الكبيرة فقط للسرعة — وهي بالضبط منطقة رأس الملف وأولى كتل إدارة المساحة. حجم الرأس المقيس يُبلَّغ كمعامل؛ لا تُسمّى عائلة من التخطيط وحده.".into(),
                 recovery_en: "The encrypted region is lost without the key. Every block after it that passes its own checks is recoverable: use odr scavenge (no dictionary) or odr extract with --assume for the file identity.".into(),
                 recovery_ar: "المنطقة المشفَّرة ضائعة بلا مفتاح. كل كتلة بعدها تجتاز فحوصها قابلة للاسترجاع: odr scavenge (بلا قاموس) أو odr extract مع --assume لهوية الملف.".into(),
                 oracle_errors: vec!["ORA-01122".into(), "ORA-01210".into(), "ORA-27047".into()],
+                parameters: vec![
+                    ("head_bytes".into(), h.end().saturating_mul(bs)),
+                    ("head_blocks".into(), h.end()),
+                ],
             });
         }
         let rest: Vec<&Span> = enc_spans.iter().copied().filter(|s| s.start > 1).collect();
@@ -329,11 +388,18 @@ pub fn findings(r: &Report) -> Vec<Finding> {
                     format!("{} encrypted spans start every {stride} blocks (±1), {n} of them in phase", rest.len()),
                     format!("span length {} blocks (first span)", rest.first().map_or(0, |s| s.len)),
                 ],
-                cause_en: "Intermittent (\"fast\") ransomware encryption: a fixed-size chunk every fixed stride, leaving the rest untouched.".into(),
-                cause_ar: "تشفير فدية متقطّع («سريع»): قطعة ثابتة الحجم كل خطوة ثابتة، والباقي سليم.".into(),
+                cause_en: "Intermittent (\"fast\") ransomware encryption: a fixed-size chunk every fixed stride, leaving the rest untouched. Stride and chunk length are reported as parameters for the incident responder; no family is named.".into(),
+                cause_ar: "تشفير فدية متقطّع («سريع»): قطعة ثابتة الحجم كل خطوة ثابتة، والباقي سليم. الخطوة وطول القطعة يُبلَّغان كمعاملات للمستجيب؛ لا تُسمّى عائلة.".into(),
                 recovery_en: "Encrypted chunks are lost; the blocks between them are intact and extractable. Rows that span an encrypted chunk are rejected, not guessed.".into(),
                 recovery_ar: "القطع المشفَّرة ضائعة؛ الكتل بينها سليمة وقابلة للاستخراج. الصف الذي يمتد إلى قطعة مشفَّرة يُرفض ولا يُخمَّن.".into(),
                 oracle_errors: vec!["ORA-01578".into(), "ORA-01110".into()],
+                parameters: vec![
+                    ("stride_blocks".into(), stride),
+                    ("stride_bytes".into(), stride.saturating_mul(bs)),
+                    ("span_blocks".into(), rest.first().map_or(0, |s| s.len)),
+                    ("span_bytes".into(), rest.first().map_or(0, |s| s.len).saturating_mul(bs)),
+                    ("spans_in_phase".into(), n),
+                ],
             });
         } else {
             // Encrypted blocks not inside any dominated span, plus dominated
@@ -355,6 +421,7 @@ pub fn findings(r: &Report) -> Vec<Finding> {
                     recovery_en: "These blocks are lost. Neighbours are judged individually.".into(),
                     recovery_ar: "هذه الكتل ضائعة. الجيران يُحكمون فرادى.".into(),
                     oracle_errors: vec!["ORA-01578".into(), "ORA-01110".into()],
+                    parameters: vec![],
                 });
             }
         }
@@ -388,6 +455,7 @@ pub fn findings(r: &Report) -> Vec<Finding> {
             recovery_en: "Lost. Rows that live entirely in other blocks are unaffected.".into(),
             recovery_ar: "ضائعة. الصفوف الواقعة كلياً في كتل أخرى لا تتأثر.".into(),
             oracle_errors: vec!["ORA-01578".into(), "ORA-08103".into()],
+            parameters: vec![],
         });
     }
 
@@ -410,6 +478,7 @@ pub fn findings(r: &Report) -> Vec<Finding> {
             recovery_en: "Each block's rows are rejected unless an independent witness exists; sibling rows in the same block are withheld if any cell fails to decode exactly (LV-064). Oracle would report ORA-01578 on first read.".into(),
             recovery_ar: "صفوف الكتلة تُرفض ما لم يوجد شاهد مستقل؛ الصفوف الشقيقة تُحجب إن فشلت أي خلية في الفكّ بدقة (LV-064). أوراكل كان سيعطي ORA-01578 عند أول قراءة.".into(),
             oracle_errors: vec!["ORA-01578".into(), "ORA-01110".into()],
+            parameters: vec![],
         });
     }
 
@@ -429,6 +498,7 @@ pub fn findings(r: &Report) -> Vec<Finding> {
             recovery_en: "The header and row directory describe the version they belong to; rows whose bytes lie entirely below the damage frontier are extracted as inferred (LV-065), never verified.".into(),
             recovery_ar: "الرأس ودليل الصفوف يصفان النسخة التي ينتميان إليها؛ الصفوف الواقعة كلياً تحت حدّ التلف تُستخرج مستنتَجة (LV-065) لا موثَّقة.".into(),
             oracle_errors: vec!["ORA-01578".into(), "ORA-01110".into(), "ORA-00600 [kcbzpb_1]".into()],
+            parameters: vec![],
         });
     }
 
@@ -448,6 +518,7 @@ pub fn findings(r: &Report) -> Vec<Finding> {
             recovery_en: "The content belongs to the block named in its header. odr scavenge groups rows by their real object id, so these rows are recovered under the right table; the block that should have been here is missing.".into(),
             recovery_ar: "المحتوى يخص الكتلة المسمّاة في رأسه. odr scavenge يجمّع الصفوف بمعرّف الكائن الحقيقي فتُسترجع تحت الجدول الصحيح؛ أما الكتلة التي كان يجب أن تكون هنا فمفقودة.".into(),
             oracle_errors: vec!["ORA-01578".into(), "ORA-01110".into(), "ORA-00600 [kcbzib_1]".into()],
+            parameters: vec![],
         });
     }
 
@@ -477,6 +548,7 @@ pub fn findings(r: &Report) -> Vec<Finding> {
             recovery_en: "The whole block is rejected (LV-062): no row from it is verified. Oracle's own check (DB_BLOCK_CHECKING / dbv) would raise ORA-00600 [kddummy_blkchk] with the kdbchk code listed above.".into(),
             recovery_ar: "الكتلة كلها مرفوضة (LV-062): لا صف منها موثَّق. فحص أوراكل (DB_BLOCK_CHECKING / dbv) كان سيعطي ORA-00600 [kddummy_blkchk] برمز kdbchk المذكور.".into(),
             oracle_errors: vec!["ORA-00600 [kddummy_blkchk]".into(), "ORA-00600 [kdBlkCheckError]".into(), "ORA-08102".into()],
+            parameters: vec![],
         });
     }
 
@@ -494,6 +566,7 @@ pub fn findings(r: &Report) -> Vec<Finding> {
             recovery_en: "The content is whatever was there when the mark was set and is not trusted; rows are reported as inferred at best.".into(),
             recovery_ar: "المحتوى هو ما كان موجوداً عند الوسم وغير موثوق؛ الصفوف تُبلَّغ مستنتَجة في أحسن الأحوال.".into(),
             oracle_errors: vec!["ORA-01578".into(), "ORA-26040".into()],
+            parameters: vec![],
         });
     }
 
@@ -513,6 +586,161 @@ pub fn findings(r: &Report) -> Vec<Finding> {
             recovery_en: "Lost for this file. The foreign content may be of forensic interest.".into(),
             recovery_ar: "ضائعة لهذا الملف. المحتوى الغريب قد يهم التحقيق الجنائي.".into(),
             oracle_errors: vec!["ORA-01578".into(), "ORA-01110".into()],
+            parameters: vec![],
+        });
+    }
+
+    // --- Payload scrambled (header-preserving ransomware, panel §1.1) ---
+    let n_ps = count("payload_scrambled");
+    if n_ps > 0 {
+        let g = by("payload_scrambled");
+        out.push(Finding {
+            code: FindingCode::PayloadScrambled,
+            severity: severity_by_share(n_ps, used, Severity::High),
+            confidence_milli: if n_ps >= 16 { 900 } else { 750 },
+            blocks: n_ps,
+            evidence: vec![
+                format!("{n_ps} blocks in {} regions keep a valid kcbh header, tail and (when present) checksum, yet their payload is ciphertext-like: entropy ≥ 7.85 bits/byte, χ² ≤ 330 against uniform, |serial correlation| ≤ 0.05", g.len()),
+                "no row directory or index/LOB structure decodes from the payload (structure score 0); genuine compressed or binary LOB payloads still decode their headers, so they are not flagged".to_owned(),
+                format!("largest region {} blocks", g.iter().map(|x| x.len).max().unwrap_or(0)),
+            ],
+            cause_en: "Header-preserving encryption: the first bytes of each block were left intact (to defeat header-based detection) while the body was encrypted. Transparent Data Encryption would be declared in the file header and leaves ITL/row directories intact — this does neither.".into(),
+            cause_ar: "تشفير يحافظ على الرأس: أول بايتات كل كتلة تُركت سليمة (لتجاوز الكشف بالرأس) بينما شُفِّر الجسم. تشفير TDE يُعلَن في رأس الملف ويُبقي ITL ودليل الصفوف — وهذا لا يفعل أياً منهما.".into(),
+            recovery_en: "Lost without the key. Checksum-valid status is meaningless here: if the attacker recomputed checksums, dbv would call these blocks healthy. Report to the incident responder with the region list.".into(),
+            recovery_ar: "ضائعة بلا مفتاح. سلامة checksum لا تعني شيئاً هنا: إن أعاد المهاجم حسابها فسيعتبرها dbv سليمة. يُبلَّغ المستجيب مع قائمة المناطق.".into(),
+            oracle_errors: vec!["ORA-00600 [kdBlkCheckError]".into(), "ORA-08102".into(), "ORA-01578".into()],
+            parameters: vec![("regions".into(), u64::try_from(g.len()).unwrap_or(u64::MAX))],
+        });
+    }
+
+    // --- Stale blocks (panel §1.4) --------------------------------------
+    let n_stale = count("stale_scn");
+    if n_stale > 0 {
+        let worst = r
+            .damaged_blocks
+            .iter()
+            .filter_map(|b| match b.damage {
+                super::Damage::StaleScn { scn, median } => Some((b.index, scn, median)),
+                _ => None,
+            })
+            .max_by_key(|&(_, s, m)| m.saturating_sub(s));
+        let mut ev = vec![format!(
+            "{n_stale} physically valid blocks carry an SCN more than max({}, {}×MAD) below their object's median SCN",
+            super::STALE_SCN_MIN_GAP,
+            super::STALE_SCN_MAD_MULT
+        )];
+        if let Some((i, s, m)) = worst {
+            ev.push(format!(
+                "largest gap: block {i} SCN {s} vs object median {m}"
+            ));
+        }
+        out.push(Finding {
+            code: FindingCode::StaleBlocks,
+            severity: severity_by_share(n_stale, used, Severity::Medium),
+            confidence_milli: 700,
+            blocks: n_stale,
+            evidence: ev,
+            cause_en: "An older image of the block: a lost write (storage acknowledged a write it never persisted), a block restored from an older backup into a newer file, or a snapshot mixed from two points in time. Oracle detects this only with DB_LOST_WRITE_PROTECT or on a standby.".into(),
+            cause_ar: "صورة أقدم للكتلة: كتابة ضائعة (التخزين أكّد كتابة لم يثبّتها)، أو كتلة مستعادة من نسخة أقدم داخل ملف أحدث، أو لقطة مخلوطة من زمنين. أوراكل لا يكشفه إلا بـ DB_LOST_WRITE_PROTECT أو على standby.".into(),
+            recovery_en: "The rows are real but may predate later changes; they are extracted and flagged inferred, not verified. Low-activity objects legitimately have wide SCN spreads — check the object list before acting.".into(),
+            recovery_ar: "الصفوف حقيقية لكنها قد تسبق تغييرات لاحقة؛ تُستخرج موسومة مستنتَجة لا موثَّقة. الكائنات قليلة النشاط قد تتسع فيها فجوات SCN طبيعياً — راجع قائمة الكائنات قبل التصرف.".into(),
+            oracle_errors: vec!["ORA-00752".into(), "ORA-00600 [3020]".into(), "ORA-08103".into()],
+            parameters: vec![],
+        });
+    }
+
+    // --- Duplicate blocks (panel §1.5) ----------------------------------
+    let n_dup = count("duplicate_rdba");
+    if n_dup > 0 {
+        let example = r.damaged_blocks.iter().find_map(|b| match b.damage {
+            super::Damage::DuplicateRdba { first_at } => Some((b.index, first_at)),
+            _ => None,
+        });
+        let mut ev = vec![format!(
+            "{n_dup} blocks carry an rdba already seen at an earlier position in this file"
+        )];
+        if let Some((i, f)) = example {
+            ev.push(format!("e.g. block {i} repeats the rdba of block {f}"));
+        }
+        out.push(Finding {
+            code: FindingCode::DuplicateBlocks,
+            severity: severity_by_share(n_dup, used, Severity::Medium),
+            confidence_milli: 900,
+            blocks: n_dup,
+            evidence: ev,
+            cause_en: "The same block image appears twice: a copy tool that re-read a buffer, a restore applied twice at an offset, or a storage layer that replayed a write to the wrong place. One of the two positions holds the wrong content.".into(),
+            cause_ar: "صورة الكتلة نفسها تظهر مرتين: أداة نسخ أعادت قراءة buffer، أو استرجاع طُبّق مرتين بإزاحة، أو طبقة تخزين أعادت كتابة في المكان الخطأ. أحد الموضعين يحمل محتوى خاطئاً.".into(),
+            recovery_en: "The first occurrence (whose position matches its rdba) is trusted; the later one is reported as misplaced content and its rows are not double-counted.".into(),
+            recovery_ar: "الظهور الأول (الذي يطابق موضعه rdba) موثوق؛ اللاحق يُبلَّغ محتوى في غير مكانه ولا تُحسب صفوفه مرتين.".into(),
+            oracle_errors: vec!["ORA-01578".into(), "ORA-00600 [kcbzib_1]".into()],
+            parameters: vec![],
+        });
+    }
+
+    // --- Tail footer (panel §1.7) ---------------------------------------
+    if let Some(t) = &r.tail_excerpt {
+        out.push(Finding {
+            code: FindingCode::TailFooter,
+            severity: Severity::Medium,
+            confidence_milli: 700,
+            blocks: t.blocks,
+            evidence: vec![
+                format!("the last {} block(s) from block {} to end of file are neither Oracle blocks nor zero", t.blocks, t.start_block),
+                format!("first 64 bytes (hex): {}", t.hex),
+                format!("first 64 bytes (ascii): {}", t.ascii),
+            ],
+            cause_en: "Foreign bytes appended to or overwriting the file tail. Many ransomware families write a footer here (victim id, encrypted session key, original size); it can also be a note, a copy-tool trailer or simply the start of another encrypted region.".into(),
+            cause_ar: "بايتات غريبة ملحقة بذيل الملف أو فوقه. كثير من عائلات الفدية تكتب هنا footer (معرّف الضحية، مفتاح الجلسة المشفَّر، الحجم الأصلي)؛ وقد يكون ملاحظة أو ذيل أداة نسخ أو بداية منطقة مشفَّرة أخرى.".into(),
+            recovery_en: "Preserve this excerpt for the incident responder — a footer often identifies the campaign and is required by decryptors. The blocks themselves are lost.".into(),
+            recovery_ar: "احتفظ بهذا المقتطف للمستجيب — الـ footer غالباً يعرّف الحملة وتحتاجه أدوات فك التشفير. الكتل نفسها ضائعة.".into(),
+            oracle_errors: vec!["ORA-27046".into(), "ORA-01578".into()],
+            parameters: vec![("tail_blocks".into(), t.blocks), ("tail_bytes".into(), t.blocks.saturating_mul(bs))],
+        });
+    }
+
+    // --- Checksum coverage (panel §1.2) ---------------------------------
+    if let Some(cov) = c.checksum_coverage_milli()
+        && cov < 1000
+    {
+        let unflagged = c.used_clean().saturating_sub(c.checksum_flagged);
+        out.push(Finding {
+            code: FindingCode::ChecksumCoverageLow,
+            severity: if cov < 500 { Severity::Medium } else { Severity::Low },
+            confidence_milli: 1000,
+            blocks: unflagged,
+            evidence: vec![format!(
+                "{} of {} used blocks carry the checksum flag (flg_kcbh & 0x04): coverage {}.{}%",
+                c.checksum_flagged,
+                c.used_clean(),
+                cov.checked_div(10).unwrap_or(0),
+                cov.checked_rem(10).unwrap_or(0)
+            )],
+            cause_en: "DB_BLOCK_CHECKSUM was OFF (or FALSE) when these blocks were written, so Oracle stored no checksum in them. This is an absence of evidence, not evidence of health: single-bit media damage in these blocks is invisible to the checksum test and only the tail check and logical rules remain.".into(),
+            cause_ar: "كان DB_BLOCK_CHECKSUM مُطفأً عند كتابة هذه الكتل فلم يخزّن أوراكل checksum فيها. هذا غياب دليل لا دليل سلامة: تلف البت الواحد في هذه الكتل غير مرئي لاختبار checksum ولا يبقى سوى فحص الذيل والقواعد المنطقية.".into(),
+            recovery_en: "Treat rows from unflagged blocks with the same care as inferred rows when the storage history is suspect. Recommend DB_BLOCK_CHECKSUM=TYPICAL on the source database.".into(),
+            recovery_ar: "عامل صفوف الكتل بلا checksum بحذر الصفوف المستنتَجة إن كان تاريخ التخزين مشبوهاً. يُنصح بـ DB_BLOCK_CHECKSUM=TYPICAL على قاعدة المصدر.".into(),
+            oracle_errors: vec![],
+            parameters: vec![("coverage_milli".into(), u64::from(cov))],
+        });
+    }
+
+    // --- Consistency pass skipped ----------------------------------------
+    if r.consistency_pass == super::ConsistencyPass::Skipped {
+        out.push(Finding {
+            code: FindingCode::ConsistencyPassSkipped,
+            severity: Severity::Info,
+            confidence_milli: 1000,
+            blocks: 0,
+            evidence: vec![format!(
+                "more than {} clean object blocks: the stale-SCN / duplicate-rdba pass was skipped to bound memory",
+                r.options.max_witnesses
+            )],
+            cause_en: "Resource bound, not damage. Stale and duplicated blocks, if any, were not looked for.".into(),
+            cause_ar: "حدّ موارد لا تلف. الكتل القديمة والمكررة — إن وُجدت — لم يُبحث عنها.".into(),
+            recovery_en: "Re-run with a larger witness cap on a machine with more memory.".into(),
+            recovery_ar: "أعد التشغيل بحدّ شهود أكبر على جهاز بذاكرة أوسع.".into(),
+            oracle_errors: vec![],
+            parameters: vec![],
         });
     }
 
@@ -533,6 +761,7 @@ pub fn findings(r: &Report) -> Vec<Finding> {
                 "The partial block is unusable; everything before it is judged on its own.".into(),
             recovery_ar: "الكتلة الناقصة غير صالحة؛ ما قبلها يُحكم بدليله.".into(),
             oracle_errors: vec!["ORA-27046".into()],
+            parameters: vec![],
         });
     }
 
@@ -553,6 +782,7 @@ pub fn findings(r: &Report) -> Vec<Finding> {
             recovery_en: "Every table can be extracted with odr extract; all rows should be verified.".into(),
             recovery_ar: "كل جدول قابل للاستخراج بـ odr extract؛ كل الصفوف ينبغي أن تكون موثَّقة.".into(),
             oracle_errors: vec![],
+            parameters: vec![],
         });
     }
     out.sort_by(|a, b| b.severity.cmp(&a.severity).then(b.blocks.cmp(&a.blocks)));

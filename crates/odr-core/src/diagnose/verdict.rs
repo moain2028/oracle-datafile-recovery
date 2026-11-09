@@ -10,6 +10,8 @@
 
 use crate::block::{BlockHeader, KCBH_LEN, RdbaScheme, TAIL_LEN, xor_fold};
 use crate::bytes::{ByteOrder, read_u32};
+use crate::row::compressed::CompressedBlock;
+use crate::row::kdb::ASSM_GAP;
 use crate::row::kdb::{DataBlock, StructuralFault};
 use crate::row::ktb::{Ktbbh, SegmentKind};
 use serde::{Deserialize, Serialize};
@@ -124,6 +126,83 @@ pub enum DbvClass {
     NotCounted,
 }
 
+/// Randomness features of a byte region (panel §1.3: entropy alone is a
+/// weak discriminator; χ² and serial correlation separate ciphertext from
+/// compressed data far better). All integer, deterministic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct Randomness {
+    /// Shannon entropy × 1000 (bits/byte).
+    pub entropy_milli: u16,
+    /// χ² statistic against the uniform distribution over 256 bins, × 1
+    /// (for 8 KiB: uniform ⇒ ≈ 255 ± 23; compressed data typically ≫ 400).
+    pub chi_square: u32,
+    /// |serial byte correlation| × 1000 (ciphertext ≤ 30; structured data ≫).
+    pub serial_corr_milli: u16,
+}
+
+impl Randomness {
+    /// Does this look like ciphertext / true randomness? (panel C §3.b
+    /// thresholds adapted to 8 KiB: entropy ≥ 7.85, χ² ≤ 330, |r| ≤ 0.05.)
+    pub const fn looks_random(self) -> bool {
+        self.entropy_milli >= 7850 && self.chi_square <= 330 && self.serial_corr_milli <= 50
+    }
+}
+
+/// Compute [`Randomness`] for a region.
+pub fn randomness(bytes: &[u8]) -> Randomness {
+    let n = bytes.len();
+    if n < 2 {
+        return Randomness {
+            entropy_milli: 0,
+            chi_square: 0,
+            serial_corr_milli: 0,
+        };
+    }
+    let mut hist = [0u32; 256];
+    for &b in bytes {
+        if let Some(c) = hist.get_mut(usize::from(b)) {
+            *c = c.saturating_add(1);
+        }
+    }
+    #[allow(clippy::cast_precision_loss)]
+    let nf = n as f64;
+    let expected = nf / 256.0;
+    let mut chi = 0.0f64;
+    for &c in &hist {
+        let d = f64::from(c) - expected;
+        chi += d * d / expected;
+    }
+    // Serial correlation (lag 1), Pearson on consecutive byte pairs.
+    let (mut sx, mut sy, mut sxx, mut syy, mut sxy) = (0.0f64, 0.0f64, 0.0f64, 0.0f64, 0.0f64);
+    for w in bytes.windows(2) {
+        if let [a, b] = *w {
+            let (x, y) = (f64::from(a), f64::from(b));
+            sx += x;
+            sy += y;
+            sxx += x * x;
+            syy += y * y;
+            sxy += x * y;
+        }
+    }
+    #[allow(clippy::cast_precision_loss)]
+    let m = n.saturating_sub(1) as f64;
+    let cov = sxy - sx * sy / m;
+    let vx = sxx - sx * sx / m;
+    let vy = syy - sy * sy / m;
+    let r = if vx > 0.0 && vy > 0.0 {
+        (cov / (vx * vy).sqrt()).abs()
+    } else {
+        0.0
+    };
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let out = Randomness {
+        entropy_milli: entropy_milli(bytes),
+        chi_square: chi.min(f64::from(u32::MAX)) as u32,
+        serial_corr_milli: (r * 1000.0).min(1000.0) as u16,
+    };
+    out
+}
+
 /// What is *wrong* with a block. Checked in this order; the first hit wins.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -142,11 +221,41 @@ pub enum Damage {
     /// sub-block hole (sparse storage, lost 512 B / 4 KiB sector, partial
     /// wipe) that happened to cover the header.
     HeaderZeroed,
-    /// Header does not parse and the bytes look random (ransomware / TDE
-    /// without wallet / any cipher): entropy ≥ [`ENCRYPTED_ENTROPY_MIN`].
+    /// Header does not parse and the bytes look random (ransomware / any
+    /// cipher): entropy ≥ [`ENCRYPTED_ENTROPY_MIN`] and χ² / serial
+    /// correlation consistent with ciphertext.
     Encrypted {
         /// Shannon entropy × 1000 (bits/byte), integer for exact comparison.
         entropy_milli: u16,
+        /// χ² against uniform.
+        chi_square: u32,
+        /// |serial correlation| × 1000.
+        serial_corr_milli: u16,
+    },
+    /// Header, tail and (if any) checksum are **valid** but the payload is
+    /// ciphertext-like and carries no decodable structure for its kind:
+    /// header-preserving ransomware (panel §1.1) — or legitimate TDE, which
+    /// the file header would declare. Never raised when a row directory
+    /// decodes.
+    PayloadScrambled {
+        /// Payload entropy × 1000.
+        entropy_milli: u16,
+        /// χ² of the payload.
+        chi_square: u32,
+    },
+    /// Physically valid but its SCN is far below the object's other blocks:
+    /// an older image (lost write, mixed restore). Assigned in a post-pass.
+    StaleScn {
+        /// Block SCN.
+        scn: u64,
+        /// Object median SCN.
+        median: u64,
+    },
+    /// The same `rdba` was already seen at an earlier position in this
+    /// file (duplicated / twice-restored block). Assigned in a post-pass.
+    DuplicateRdba {
+        /// Earlier position.
+        first_at: u64,
     },
     /// Header does not parse and the bytes are *not* random — something
     /// structured but foreign was written here (text, another file…).
@@ -189,6 +298,9 @@ impl Damage {
             Self::Zeroed => "zeroed",
             Self::HeaderZeroed => "header_zeroed",
             Self::Encrypted { .. } => "encrypted",
+            Self::PayloadScrambled { .. } => "payload_scrambled",
+            Self::StaleScn { .. } => "stale_scn",
+            Self::DuplicateRdba { .. } => "duplicate_rdba",
             Self::Garbage { .. } => "garbage",
             Self::MarkedCorrupt => "marked_corrupt",
             Self::ChecksumFail => "checksum_fail",
@@ -225,6 +337,12 @@ pub struct Verdict {
     /// Live (non-deleted, head-piece) rows counted at [`Depth::Logical`] on
     /// clean `Data` blocks.
     pub live_rows: Option<u32>,
+    /// Whether the header carried the checksum flag (`flg_kcbh & 0x04`).
+    /// `DB_BLOCK_CHECKSUM=OFF` leaves it clear: an *absence of evidence*
+    /// the report must disclose (panel §1.2).
+    pub checksum_present: bool,
+    /// Raw `rdba` for duplicate detection (clean blocks only).
+    pub rdba: Option<u32>,
 }
 
 /// Shannon entropy in bits per byte, × 1000, rounded down. Exact integer
@@ -275,6 +393,8 @@ pub fn verdict(
         objd: None,
         scn: None,
         live_rows: None,
+        checksum_present: false,
+        rdba: None,
     };
     if block.len() < block_size || block.len() < KCBH_LEN + TAIL_LEN {
         return unknown(Damage::Truncated { have: block.len() });
@@ -287,6 +407,8 @@ pub fn verdict(
             objd: None,
             scn: None,
             live_rows: None,
+            checksum_present: false,
+            rdba: None,
         };
     }
     if block.iter().all(|&b| b == 0) {
@@ -308,13 +430,19 @@ pub fn verdict(
     // the bytes are not an Oracle block at all and entropy decides what they
     // are.
     if h.format & 0x0F != 0x02 {
-        let e = entropy_milli(body);
+        let rnd = randomness(body);
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let min = (ENCRYPTED_ENTROPY_MIN * 1000.0) as u16;
-        return unknown(if e >= min {
-            Damage::Encrypted { entropy_milli: e }
+        return unknown(if rnd.entropy_milli >= min {
+            Damage::Encrypted {
+                entropy_milli: rnd.entropy_milli,
+                chi_square: rnd.chi_square,
+                serial_corr_milli: rnd.serial_corr_milli,
+            }
         } else {
-            Damage::Garbage { entropy_milli: e }
+            Damage::Garbage {
+                entropy_milli: rnd.entropy_milli,
+            }
         });
     }
     let tail_ok = matches!(read_u32(body, block_size.saturating_sub(TAIL_LEN), order), Ok(t) if t == h.expected_tail());
@@ -332,6 +460,8 @@ pub fn verdict(
         objd: None,
         scn: Some(h.scn.0),
         live_rows: None,
+        checksum_present: h.has_checksum(),
+        rdba: None,
     };
     if h.seq == SEQ_MARKED_CORRUPT {
         v.damage = Damage::MarkedCorrupt;
@@ -362,6 +492,41 @@ pub fn verdict(
                 header_block: small_blk,
             };
             return v;
+        }
+    }
+    v.rdba = Some(h.rdba.0);
+    // Header-preserving encryption (panel §1.1): the transactional header
+    // region is plausible, but the payload after the ITL area is ciphertext
+    // and *no structure decodes*. Only table data blocks are judged: they
+    // are the one kind we can decode (`kdbh` + row directory), so
+    // "structure score 0" is a measurement, not a guess. A compressed
+    // block (`Unsupported`) *is* recognised structure — its payload is
+    // legitimately high-entropy. Index and LOB payloads are deferred until
+    // a `kdx`/LOB decoder exists (panel §2); Empty/Space/Undo may hold
+    // anything.
+    if kind == BlockKind::Data {
+        let payload_start = ktb
+            .map_or(0x2C, |k| k.itl_end())
+            .min(block_size.saturating_sub(TAIL_LEN));
+        if let Some(payload) = body.get(payload_start..block_size.saturating_sub(TAIL_LEN)) {
+            let rnd = randomness(payload);
+            if rnd.looks_random() {
+                // `Unsupported` alone is not structure: a random flag byte
+                // carries the COMPRESSED bit half the time. Only a parsed
+                // compressed block (symbol table + rows) counts.
+                let kdbh_off = ktb.map_or(0x2C, |k| k.itl_end());
+                let structured = DataBlock::parse(body, order).is_ok()
+                    || CompressedBlock::parse(body, order, kdbh_off).is_ok()
+                    || CompressedBlock::parse(body, order, kdbh_off.saturating_add(ASSM_GAP))
+                        .is_ok();
+                if !structured {
+                    v.damage = Damage::PayloadScrambled {
+                        entropy_milli: rnd.entropy_milli,
+                        chi_square: rnd.chi_square,
+                    };
+                    return v;
+                }
+            }
         }
     }
     if depth == Depth::Logical && kind == BlockKind::Data {
@@ -414,6 +579,38 @@ mod tests {
         assert_eq!(entropy_milli(&uniform), 8000);
         let two: Vec<u8> = (0..8192u32).map(|i| (i % 2) as u8).collect();
         assert_eq!(entropy_milli(&two), 1000);
+    }
+
+    #[test]
+    fn randomness_separates_uniform_from_structured() {
+        // SplitMix64: the multiplicative-hash sequence used before is a
+        // Weyl sequence with |serial r| ≈ 0.17 — the detector was right
+        // to refuse it, so the fixture must be a real PRNG.
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        let uniform: Vec<u8> = (0..8192u32)
+            .map(|_| {
+                state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+                let mut z = state;
+                z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+                z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+                (z ^ (z >> 31)) as u8
+            })
+            .collect();
+        let r = randomness(&uniform);
+        assert!(r.entropy_milli >= 7900, "{r:?}");
+        assert!(r.chi_square <= 330, "{r:?}");
+        assert!(r.serial_corr_milli <= 50, "{r:?}");
+        assert!(r.looks_random());
+        let text: Vec<u8> = b"SELECT * FROM T WHERE ID = 1; "
+            .iter()
+            .cycle()
+            .take(8192)
+            .copied()
+            .collect();
+        let t = randomness(&text);
+        assert!(!t.looks_random(), "{t:?}");
+        assert!(t.chi_square > 1000, "{t:?}");
+        assert_eq!(randomness(&[]).entropy_milli, 0);
     }
 
     #[test]

@@ -58,7 +58,7 @@ fn datafile(n: usize, order: ByteOrder, seed: u64) -> Vec<u8> {
     debug_assert_eq!(odr_core::block::xor_fold(&h), 0);
     img.extend(h);
     for i in 2..=n {
-        img.extend(synth_block(
+        let mut b = synth_block(
             BS,
             order,
             0x06,
@@ -66,7 +66,16 @@ fn datafile(n: usize, order: ByteOrder, seed: u64) -> Vec<u8> {
             1000 + i as u32,
             1,
             seed ^ i as u64,
-        ));
+        );
+        // Random bodies carry no row directory: a `ktbbhtyp` of 1 (by
+        // chance, 1/256) would now be judged header-preserving encryption
+        // (panel §1.1), which is correct — so make these blocks explicitly
+        // "other data" (typ 3) and re-seal the checksum.
+        b[0x14] = 3;
+        b[16..18].fill(0);
+        let c = odr_core::block::xor_fold(&b);
+        b[16..18].copy_from_slice(&c.to_le_bytes());
+        img.extend(b);
     }
     img
 }
@@ -118,7 +127,7 @@ fn verdict_covers_every_physical_damage() {
         // Random bytes: encrypted, or (1/16) a header that happens to parse
         // and then fails tail/checksum — never clean.
         assert!(
-            matches!(v.damage, Damage::Encrypted { entropy_milli } if entropy_milli >= 7850)
+            matches!(v.damage, Damage::Encrypted { entropy_milli, .. } if entropy_milli >= 7850)
                 || matches!(v.damage, Damage::Torn | Damage::ChecksumFail),
             "{:?}",
             v.damage
@@ -380,6 +389,7 @@ fn hash_is_of_the_scanned_bytes_and_records_are_capped() {
         Options {
             depth: Depth::Physical,
             max_block_records: 5,
+            ..Options::default()
         },
     )
     .unwrap();

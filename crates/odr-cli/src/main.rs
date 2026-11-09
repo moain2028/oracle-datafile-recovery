@@ -6,6 +6,7 @@
 mod diagnose_cmd;
 mod dict_cmd;
 mod scavenge_cmd;
+mod triage_cmd;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
@@ -78,6 +79,22 @@ enum Cmd {
         /// 2019: one JSON header line, then one JSON object per block).
         #[arg(long)]
         db3f: Option<PathBuf>,
+    },
+    /// Diagnose every datafile in one or more directories / paths and rank
+    /// them worst-first by recoverability score. Non-Oracle files are
+    /// listed with the reason, never skipped silently.
+    Triage {
+        /// Directories (all `*.dbf` inside) and/or files.
+        paths: Vec<PathBuf>,
+        /// Physical checks only.
+        #[arg(long)]
+        fast: bool,
+        /// Emit JSON instead of a table.
+        #[arg(long)]
+        json: bool,
+        /// Table language.
+        #[arg(long, value_enum, default_value = "en")]
+        lang: LangArg,
     },
     /// Classify every block of a datafile (read-only) and print a summary.
     Scan {
@@ -199,6 +216,18 @@ fn run() -> Result<ExitCode> {
                 html.as_deref(),
                 db3f.as_deref(),
             );
+        }
+        Cmd::Triage {
+            paths,
+            fast,
+            json,
+            lang,
+        } => {
+            let lang = match lang {
+                LangArg::En => diagnose_cmd::Lang::En,
+                LangArg::Ar => diagnose_cmd::Lang::Ar,
+            };
+            return triage_cmd::triage(&paths, fast, json, lang);
         }
         Cmd::Scan {
             file,

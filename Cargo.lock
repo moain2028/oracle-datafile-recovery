@@ -360,6 +360,7 @@ dependencies = [
  "clap",
  "odr-core",
  "odr-corrupt",
+ "serde",
  "serde_json",
 ]
 

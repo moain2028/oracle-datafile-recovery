@@ -52,6 +52,7 @@ pub(crate) fn diagnose(
     json: bool,
     lang: Lang,
     list: usize,
+    html: Option<&Path>,
 ) -> Result<ExitCode> {
     if let Some(bs) = block_size
         && !odr_core::block::BLOCK_SIZES.contains(&bs)
@@ -97,6 +98,18 @@ pub(crate) fn diagnose(
     }
     let report = report.with_triage(&file.display().to_string());
     let unchanged = report.sha256_scanned == sha_before;
+    if let Some(out) = html {
+        let l = match lang {
+            Lang::En => odr_core::diagnose::html::Lang::En,
+            Lang::Ar => odr_core::diagnose::html::Lang::Ar,
+        };
+        let page =
+            odr_core::diagnose::html::render(&report, &file.display().to_string(), &sha_before, l);
+        std::fs::write(out, page).with_context(|| format!("writing {}", out.display()))?;
+        if !json {
+            eprintln!("html report written to {}", out.display());
+        }
+    }
     if json {
         let mut v = serde_json::to_value(&report)?;
         if let Some(o) = v.as_object_mut() {

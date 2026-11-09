@@ -9,6 +9,7 @@
 //! computed from the very bytes being judged, so one pass both classifies
 //! and proves the evidence did not change under us (ADR-0002).
 
+pub mod html;
 pub mod layout;
 pub mod pattern;
 pub mod triage;

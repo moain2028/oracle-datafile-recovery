@@ -70,6 +70,10 @@ enum Cmd {
         /// List up to N damaged blocks individually.
         #[arg(long, default_value_t = 0)]
         list: usize,
+        /// Also write a self-contained HTML report (printable, same language
+        /// as `--lang`) to this path.
+        #[arg(long)]
+        html: Option<PathBuf>,
     },
     /// Classify every block of a datafile (read-only) and print a summary.
     Scan {
@@ -168,6 +172,7 @@ fn run() -> Result<ExitCode> {
             json,
             lang,
             list,
+            html,
         } => {
             let order = endian.map(|e| match e {
                 Endian::Little => ByteOrder::Little,
@@ -177,7 +182,17 @@ fn run() -> Result<ExitCode> {
                 LangArg::En => diagnose_cmd::Lang::En,
                 LangArg::Ar => diagnose_cmd::Lang::Ar,
             };
-            return diagnose_cmd::diagnose(&file, block_size, order, force, fast, json, lang, list);
+            return diagnose_cmd::diagnose(
+                &file,
+                block_size,
+                order,
+                force,
+                fast,
+                json,
+                lang,
+                list,
+                html.as_deref(),
+            );
         }
         Cmd::Scan {
             file,

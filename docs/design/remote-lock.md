@@ -38,7 +38,7 @@ Brute force: after 5 wrong codes, 30 s wait doubling each failure (cap 2^8).
 `RemoteSource.cs` (fetch, parse → Data/NotFound/Offline), `LicenseService.cs` (state table; pure `Apply()`), `Settings.cs` (`%LOCALAPPDATA%\ODR\settings.json`), `DeviceIdentity.cs`, `LockForm.cs` (RTL lock screen). `MainForm` disables itself and shows `LockForm` while `!Allowed`; the window and its state survive the lock.
 
 ## Proof
-`ODR.exe --selftest-license` runs 27 checks of the state table with fake remote results (no network) — run in CI before signing. `--autotest` (14 UI checks) runs with the gate disabled so CI never depends on GitHub availability.
+`ODR.exe --selftest-license` runs 28 checks of the state table with fake remote results (no network) — run in CI before signing. `--autotest` (14 UI checks) runs with the gate disabled so CI never depends on GitHub availability.
 
 ## Operating it
 ```bash

@@ -24,7 +24,7 @@ namespace OdrApp.Tests
             var dev = DeviceIdentity.Id();
             var hash = LicenseService.HashCode256("odr-abcd-efgh-2345");
 
-            Check(LicenseService.NormalizeCode(" odr-abcd ٢٣٤٥ ") == "ODR-ABCD2345", "normalize: spaces, case, Arabic digits");
+            Check(LicenseService.NormalizeCode(" odr-abcd ٢٣٤٥ ") == "ODR-ABCD2345", "normalize: spaces, case, Arabic digits (dashes are part of the code)");
             Check(LicenseService.HashCode256("ODR-ABCD-EFGH-2345") == hash, "hash is case/space independent");
             Check(dev.Length == 8 && DeviceIdentity.Normalize(DeviceIdentity.Pretty(dev)) == dev, "device id 8 hex, pretty round-trips");
 
@@ -50,7 +50,8 @@ namespace OdrApp.Tests
             Check(!s.Allowed && s.Reason == LockReason.Locked && s.AcceptsCode && s.Message == "stop" && s.Contact == "+967", "active:false + code -> locked, accepts code");
             RemoteSource.Fetcher = url => Task.FromResult(Tuple.Create(200, locked)); // raw path returns the json
             Check(!LicenseService.ActivateAsync(p, "ODR-WRONG", dev).Result, "wrong code rejected");
-            Check(LicenseService.ActivateAsync(p, "odr abcd efgh ٢٣٤٥", dev).Result, "right code (messy input) accepted");
+            Check(LicenseService.ActivateAsync(p, " odr-abcd - efgh-٢٣٤٥ ", dev).Result, "right code (lower-case, spaces, Arabic digits) accepted");
+            Check(!LicenseService.ActivateAsync(p, "odr abcd efgh 2345", dev).Result, "code without its dashes is a different code");
             s = LicenseService.Apply(p, Data(locked), dev);
             Check(s.Allowed, "activated code keeps it open while the hash is unchanged");
             var rotated = "{\"active\":false,\"codeSha256\":\"" + LicenseService.HashCode256("ODR-NEW1-NEW2-NEW3") + "\"}";

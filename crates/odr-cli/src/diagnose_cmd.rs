@@ -105,8 +105,7 @@ pub(crate) fn diagnose(
         let mut w = std::io::BufWriter::new(f);
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
+            .map_or(0, |d| d.as_secs());
         odr_core::diagnose::db3f::write_header(
             &mut w,
             &report,

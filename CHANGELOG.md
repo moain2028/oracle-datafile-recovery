@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.7.0 — 2026-11-09 — Windows app restructured
+
+### Windows app
+- New shell: navy sidebar with six pages (الرئيسية / الاسترجاع / التشخيص / الفرز / البصمة / الإعدادات), gold accents, Arabic RTL; **ℹ️ on every page** explains purpose, steps and what the numbers mean (`Ui/Help.cs`).
+- **Diagnose page**: score gauge, verdict, facts, finding cards (cause · evidence · parameters · recovery · ORA errors), damage classes, regions, next steps with copyable commands; export HTML (opens), DB3F, JSON; drag-drop.
+- **Triage page**: folder/files → worst-first table coloured by band, CSV export, double-click opens the diagnosis.
+- **Fingerprint page**: learn a book from a healthy database (dict → learn), match a scavenge report → suggested names with confidence.
+- **Settings/About**: output folder, device id (copy / WhatsApp), licence state + recheck, engine paths, links.
+- Recovery flow unchanged in logic, now `Ui/RecoverPage.cs`, with a "diagnose selected file" shortcut.
+- `--autotest` extended: 14 → 18 checks (diagnose on a healthy demo file), screenshots of all pages.
+- `license.json` now carries the plain activation `code` (owner's choice: simple true/false + code); `codeSha256` still accepted.
+- Docs: `docs/design/windows-app.md`, installer README.
+
 ## [Unreleased] — `odr diagnose`
 
 ### Added — Windows app: remote lock (kill switch)

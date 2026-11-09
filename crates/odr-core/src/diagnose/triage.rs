@@ -69,8 +69,69 @@ pub struct Triage {
     pub clean_used_milli: u16,
     /// Live rows counted on clean data blocks (logical depth), if measured.
     pub live_rows: Option<u64>,
+    /// Quantitative loss estimate (panel §1.9): the share (‰) of *used*
+    /// bytes that cannot be recovered from this file alone. Damaged data
+    /// and LOB blocks count fully; damaged index blocks count at 10 %
+    /// (indexes are rebuilt from table data, so their loss is cheap);
+    /// other damaged blocks at 50 %. Missing (truncated) blocks are assumed
+    /// to be data. Deterministic integer arithmetic.
+    pub expected_loss_milli: u16,
+    /// Bytes of used blocks that are damaged, lost or missing.
+    pub bytes_affected: u64,
+    /// Share (‰) of used clean blocks carrying a checksum; `None` when
+    /// nothing is in use. < 1000 means bit rot is only partially detectable.
+    pub checksum_coverage_milli: Option<u32>,
     /// Ordered next steps.
     pub next_steps: Vec<NextStep>,
+}
+
+/// Expected loss (‰ of used bytes) and the absolute bytes affected.
+fn expected_loss(r: &Report) -> (u16, u64) {
+    let c = &r.counters;
+    let bs = u64::try_from(r.layout.block_size).unwrap_or(8192);
+    let mut index_damaged = 0u64;
+    let mut lob_damaged = 0u64;
+    let mut data_damaged = 0u64;
+    let mut other_damaged = 0u64;
+    for b in &r.damaged_blocks {
+        match b.kind {
+            super::BlockKind::Index => index_damaged = index_damaged.saturating_add(1),
+            super::BlockKind::Lob => lob_damaged = lob_damaged.saturating_add(1),
+            super::BlockKind::Data => data_damaged = data_damaged.saturating_add(1),
+            _ => other_damaged = other_damaged.saturating_add(1),
+        }
+    }
+    // Blocks beyond the capped list: treat as data (worst case).
+    let listed = index_damaged
+        .saturating_add(lob_damaged)
+        .saturating_add(data_damaged)
+        .saturating_add(other_damaged);
+    let unlisted = c.damaged_total().saturating_sub(listed);
+    let missing = r
+        .findings
+        .iter()
+        .filter(|f| f.code == FindingCode::Truncated)
+        .map(|f| f.blocks)
+        .max()
+        .unwrap_or(0);
+    // Weighted loss in "block-‰" units (×1000).
+    let weighted = data_damaged
+        .saturating_add(lob_damaged)
+        .saturating_add(unlisted)
+        .saturating_add(missing)
+        .saturating_mul(1000)
+        .saturating_add(index_damaged.saturating_mul(100))
+        .saturating_add(other_damaged.saturating_mul(500));
+    let used_total = c
+        .used_clean()
+        .saturating_add(c.damaged_total())
+        .saturating_add(missing);
+    let milli = weighted
+        .checked_div(used_total.max(1))
+        .unwrap_or(0)
+        .min(1000);
+    let bytes = c.damaged_total().saturating_add(missing).saturating_mul(bs);
+    (u16::try_from(milli).unwrap_or(1000), bytes)
 }
 
 fn band(score: u8) -> Band {
@@ -246,6 +307,51 @@ pub fn triage(r: &Report, file_name: &str) -> Triage {
         );
     }
 
+    // 7. Header-preserving encryption: checksums lie, nothing in those
+    //    blocks is usable, and dbv would have passed them.
+    if let Some(f) = has(FindingCode::PayloadScrambled) {
+        push(
+            if f.blocks >= 100 { 10 } else { 5 },
+            format!(
+                "{} blocks have valid headers but encrypted payloads (invisible to dbv)",
+                f.blocks
+            ),
+            format!("{} كتلة برؤوس سليمة وحمولة مشفَّرة (لا يراها dbv)", f.blocks),
+        );
+    }
+
+    // 8. Stale / duplicate blocks: rows are real but of uncertain era.
+    if let Some(f) = has(FindingCode::StaleBlocks) {
+        push(
+            if f.blocks >= 10 { 4 } else { 2 },
+            format!(
+                "{} blocks are older images than their siblings (lost writes / mixed restore)",
+                f.blocks
+            ),
+            format!(
+                "{} كتلة صورها أقدم من شقيقاتها (كتابات ضائعة / استرجاع مخلوط)",
+                f.blocks
+            ),
+        );
+    }
+
+    // 9. Checksum coverage: absence of evidence lowers confidence, a little.
+    let checksum_coverage_milli = c.checksum_coverage_milli();
+    if let Some(cov) = checksum_coverage_milli
+        && cov < 1000
+    {
+        push(
+            if cov < 500 { 3 } else { 1 },
+            format!(
+                "only {cov}‰ of used blocks carry a checksum: bit rot in the rest is undetectable by checksum"
+            ),
+            format!(
+                "{cov}‰ فقط من الكتل المستخدمة تحمل checksum: تلف البت في الباقي لا يُكشف بـ checksum"
+            ),
+        );
+    }
+    let (expected_loss_milli, bytes_affected) = expected_loss(r);
+
     ded.sort_by_key(|d| std::cmp::Reverse(d.points));
     let total: u32 = ded.iter().map(|d| u32::from(d.points)).sum();
     let score = u8::try_from(100u32.saturating_sub(total)).unwrap_or(0);
@@ -324,7 +430,10 @@ pub fn triage(r: &Report, file_name: &str) -> Triage {
             command: format!("odr scavenge \"{file_name}\" --out <out>/"),
         });
     }
-    if has(FindingCode::RansomwareHead).is_some() || has(FindingCode::RansomwarePeriodic).is_some()
+    if has(FindingCode::RansomwareHead).is_some()
+        || has(FindingCode::RansomwarePeriodic).is_some()
+        || has(FindingCode::PayloadScrambled).is_some()
+        || has(FindingCode::TailFooter).is_some()
     {
         steps.push(NextStep {
             purpose_en: "Ransomware: preserve this file read-only as evidence; the encrypted region is lost without the key — do not pay before measuring what survived".into(),
@@ -350,6 +459,9 @@ pub fn triage(r: &Report, file_name: &str) -> Triage {
         verified_possible,
         clean_used_milli,
         live_rows,
+        expected_loss_milli,
+        bytes_affected,
+        checksum_coverage_milli,
         next_steps: steps,
     }
 }

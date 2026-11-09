@@ -1,6 +1,13 @@
 # Changelog
 
 ## [Unreleased] — `odr diagnose`
+
+### Added (agent-panel consensus, `docs/research/06_agent_panel_synthesis_ar.md` §1)
+- Verdicts: `payload_scrambled` (header-preserving ransomware; LV-081), `stale_scn` and `duplicate_rdba` (post-pass per object, LV-082/083); `Encrypted` now carries χ² and serial correlation (LV-080).
+- Counters: `checksum_flagged` + `checksum_coverage_milli()`; `Report.consistency_pass`, `Report.tail_excerpt`.
+- Findings: `PAYLOAD_SCRAMBLED`, `STALE_BLOCKS`, `DUPLICATE_BLOCKS`, `HEADER_BLOCKSIZE_MISMATCH`, `CHECKSUM_COVERAGE_LOW`, `CONSISTENCY_PASS_SKIPPED`, `TAIL_FOOTER`; every finding has machine-readable `parameters` (ransomware geometry instead of family names).
+- Triage: `expected_loss_milli`, `bytes_affected`, `checksum_coverage_milli`; new deductions for scrambled payloads, stale blocks and low checksum coverage.
+- Tests: `tests/diagnose_panel.rs` (9) + 4 unit tests on the post-pass; LV-080..084.
 ### Added
 - **`odr diagnose FILE [--json] [--lang en|ar] [--fast] [--list N]`** — corruption detection and explanation engine (`docs/design/diagnose.md`, REQ-001.2/.3/.5):
   - per-block verdict: kind (Data/Index/Lob/Empty/Space/Undo/…) × damage (truncated, zeroed, header_zeroed, encrypted, garbage, marked_corrupt, checksum_fail, torn, misplaced, logical) — `dbv` classes **match exactly on all 4 golden 26ai files** (LV-078);

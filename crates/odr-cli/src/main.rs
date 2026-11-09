@@ -3,8 +3,11 @@
 //! Output contract: human text by default, `--json` for machine output.
 //! Exit codes: 0 ok · 1 usage/IO error · 2 completed with damaged blocks.
 
+mod diagnose_cmd;
 mod dict_cmd;
+mod fingerprint_cmd;
 mod scavenge_cmd;
+mod triage_cmd;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
@@ -28,8 +31,112 @@ enum Endian {
     Big,
 }
 
+#[derive(Clone, Copy, ValueEnum)]
+enum LangArg {
+    En,
+    Ar,
+}
+
+#[derive(Subcommand)]
+enum FingerprintAction {
+    /// Build a fingerprint book from an `odr dict --json` report.
+    Learn {
+        /// `odr dict --json` output of a healthy database.
+        dict_json: PathBuf,
+        /// Product label stored in the book (e.g. `onyx-pro-11`).
+        #[arg(long, default_value = "unnamed")]
+        product: String,
+        /// Only these schema owners (repeatable). Default: every non-SYS
+        /// owner — pass the product's schemas to avoid Oracle option
+        /// schemas (CTXSYS, MDSYS…) polluting the matches.
+        #[arg(long = "owner")]
+        owners: Vec<String>,
+        /// Output book path.
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Match an `odr scavenge` `report.json` against a book.
+    Match {
+        /// `report.json` written by `odr scavenge`.
+        scavenge_json: PathBuf,
+        /// Fingerprint book from `learn`.
+        #[arg(long)]
+        book: PathBuf,
+        /// Emit JSON.
+        #[arg(long)]
+        json: bool,
+    },
+}
+
 #[derive(Subcommand)]
 enum Cmd {
+    /// Detect, classify and explain damage in a datafile (read-only):
+    /// every block judged (data/index/LOB/empty…, zeroed/encrypted/torn/
+    /// checksum/misplaced/logical), damage regions, per-object summary and
+    /// interpreted findings with cause, recoverability and Oracle errors.
+    /// Block size and byte order come from the header, the OS block, or
+    /// are inferred from block signatures when both are destroyed.
+    Diagnose {
+        /// Path to the datafile.
+        file: PathBuf,
+        /// Block size (only honoured with `--force`; otherwise it must agree
+        /// with the file).
+        #[arg(long)]
+        block_size: Option<usize>,
+        /// Byte order (with `--force`).
+        #[arg(long, value_enum)]
+        endian: Option<Endian>,
+        /// Use `--block-size`/`--endian` even when the file disagrees or
+        /// cannot be read. Recorded in the output.
+        #[arg(long)]
+        force: bool,
+        /// Physical checks only (skip the per-block structural check and
+        /// row counting). Faster; misses logical corruption.
+        #[arg(long)]
+        fast: bool,
+        /// Emit JSON instead of text.
+        #[arg(long)]
+        json: bool,
+        /// Report language for text output.
+        #[arg(long, value_enum, default_value = "en")]
+        lang: LangArg,
+        /// List up to N damaged blocks individually.
+        #[arg(long, default_value_t = 0)]
+        list: usize,
+        /// Also write a self-contained HTML report (printable, same language
+        /// as `--lang`) to this path.
+        #[arg(long)]
+        html: Option<PathBuf>,
+        /// Also write a DB3F file (Database Forensic File Format, DFRWS
+        /// 2019: one JSON header line, then one JSON object per block).
+        #[arg(long)]
+        db3f: Option<PathBuf>,
+    },
+    /// Diagnose every datafile in one or more directories / paths and rank
+    /// them worst-first by recoverability score. Non-Oracle files are
+    /// listed with the reason, never skipped silently.
+    Triage {
+        /// Directories (all `*.dbf` inside) and/or files.
+        paths: Vec<PathBuf>,
+        /// Physical checks only.
+        #[arg(long)]
+        fast: bool,
+        /// Emit JSON instead of a table.
+        #[arg(long)]
+        json: bool,
+        /// Table language.
+        #[arg(long, value_enum, default_value = "en")]
+        lang: LangArg,
+    },
+    /// Name scavenged objects when the dictionary is gone, from the
+    /// column-type *shapes* of a healthy database of the same product.
+    /// `learn`: `odr dict --json` → fingerprint book (shapes only, no data).
+    /// `match`: `odr scavenge` report + book → suggested table names with
+    /// a confidence score — suggestions, never facts.
+    Fingerprint {
+        #[command(subcommand)]
+        action: FingerprintAction,
+    },
     /// Classify every block of a datafile (read-only) and print a summary.
     Scan {
         /// Path to the datafile.
@@ -115,8 +222,69 @@ fn main() -> ExitCode {
     }
 }
 
+#[allow(clippy::too_many_lines)] // one dispatch per subcommand
 fn run() -> Result<ExitCode> {
     let (file, block_size_arg, endian_arg, force, json) = match Cli::parse().cmd {
+        Cmd::Diagnose {
+            file,
+            block_size,
+            endian,
+            force,
+            fast,
+            json,
+            lang,
+            list,
+            html,
+            db3f,
+        } => {
+            let order = endian.map(|e| match e {
+                Endian::Little => ByteOrder::Little,
+                Endian::Big => ByteOrder::Big,
+            });
+            let lang = match lang {
+                LangArg::En => diagnose_cmd::Lang::En,
+                LangArg::Ar => diagnose_cmd::Lang::Ar,
+            };
+            return diagnose_cmd::diagnose(
+                &file,
+                block_size,
+                order,
+                force,
+                fast,
+                json,
+                lang,
+                list,
+                html.as_deref(),
+                db3f.as_deref(),
+            );
+        }
+        Cmd::Fingerprint { action } => {
+            return match action {
+                FingerprintAction::Learn {
+                    dict_json,
+                    product,
+                    owners,
+                    out,
+                } => fingerprint_cmd::learn(&dict_json, &product, &owners, &out),
+                FingerprintAction::Match {
+                    scavenge_json,
+                    book,
+                    json,
+                } => fingerprint_cmd::match_report(&scavenge_json, &book, json),
+            };
+        }
+        Cmd::Triage {
+            paths,
+            fast,
+            json,
+            lang,
+        } => {
+            let lang = match lang {
+                LangArg::En => diagnose_cmd::Lang::En,
+                LangArg::Ar => diagnose_cmd::Lang::Ar,
+            };
+            return triage_cmd::triage(&paths, fast, json, lang);
+        }
         Cmd::Scan {
             file,
             block_size,

@@ -360,6 +360,7 @@ dependencies = [
  "clap",
  "odr-core",
  "odr-corrupt",
+ "serde",
  "serde_json",
 ]
 
@@ -370,6 +371,7 @@ dependencies = [
  "odr-testkit",
  "proptest",
  "serde",
+ "serde_json",
  "sha2",
  "thiserror",
 ]

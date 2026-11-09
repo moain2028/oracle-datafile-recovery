@@ -16,6 +16,7 @@
 pub mod block;
 pub mod bytes;
 pub mod charset;
+pub mod diagnose;
 pub mod dict;
 pub mod error;
 pub mod row;

@@ -17,6 +17,7 @@ path = "src/main.rs"
 odr-core.workspace = true
 clap.workspace = true
 anyhow.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]

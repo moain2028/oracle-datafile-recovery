@@ -5,6 +5,7 @@
 
 mod diagnose_cmd;
 mod dict_cmd;
+mod fingerprint_cmd;
 mod scavenge_cmd;
 mod triage_cmd;
 
@@ -34,6 +35,37 @@ enum Endian {
 enum LangArg {
     En,
     Ar,
+}
+
+#[derive(Subcommand)]
+enum FingerprintAction {
+    /// Build a fingerprint book from an `odr dict --json` report.
+    Learn {
+        /// `odr dict --json` output of a healthy database.
+        dict_json: PathBuf,
+        /// Product label stored in the book (e.g. `onyx-pro-11`).
+        #[arg(long, default_value = "unnamed")]
+        product: String,
+        /// Only these schema owners (repeatable). Default: every non-SYS
+        /// owner — pass the product's schemas to avoid Oracle option
+        /// schemas (CTXSYS, MDSYS…) polluting the matches.
+        #[arg(long = "owner")]
+        owners: Vec<String>,
+        /// Output book path.
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Match an `odr scavenge` `report.json` against a book.
+    Match {
+        /// `report.json` written by `odr scavenge`.
+        scavenge_json: PathBuf,
+        /// Fingerprint book from `learn`.
+        #[arg(long)]
+        book: PathBuf,
+        /// Emit JSON.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -95,6 +127,15 @@ enum Cmd {
         /// Table language.
         #[arg(long, value_enum, default_value = "en")]
         lang: LangArg,
+    },
+    /// Name scavenged objects when the dictionary is gone, from the
+    /// column-type *shapes* of a healthy database of the same product.
+    /// `learn`: `odr dict --json` → fingerprint book (shapes only, no data).
+    /// `match`: `odr scavenge` report + book → suggested table names with
+    /// a confidence score — suggestions, never facts.
+    Fingerprint {
+        #[command(subcommand)]
+        action: FingerprintAction,
     },
     /// Classify every block of a datafile (read-only) and print a summary.
     Scan {
@@ -216,6 +257,21 @@ fn run() -> Result<ExitCode> {
                 html.as_deref(),
                 db3f.as_deref(),
             );
+        }
+        Cmd::Fingerprint { action } => {
+            return match action {
+                FingerprintAction::Learn {
+                    dict_json,
+                    product,
+                    owners,
+                    out,
+                } => fingerprint_cmd::learn(&dict_json, &product, &owners, &out),
+                FingerprintAction::Match {
+                    scavenge_json,
+                    book,
+                    json,
+                } => fingerprint_cmd::match_report(&scavenge_json, &book, json),
+            };
         }
         Cmd::Triage {
             paths,

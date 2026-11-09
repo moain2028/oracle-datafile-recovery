@@ -12,6 +12,7 @@ using System.Text;
 using System.Threading.Tasks;
 using System.Web.Script.Serialization;
 using System.Windows.Forms;
+using OdrApp.Remote;
 
 namespace OdrApp
 {
@@ -59,6 +60,12 @@ namespace OdrApp
         public readonly List<ExtractResult> Results = new List<ExtractResult>();
         bool busy;
 
+        // Remote kill switch (odr-apps/odr/license.json). Disabled under --autotest so CI never
+        // depends on the network; the logic itself is covered by LicenseService's unit tests.
+        LicenseService lic;
+        LockForm lockForm;
+        readonly Timer licTimer = new Timer { Interval = 60_000 };
+
         public MainForm(string autotestDir)
         {
             this.autotestDir = autotestDir;
@@ -76,8 +83,39 @@ namespace OdrApp
             SetStatus(OdrTool.Odr == null
                 ? "تنبيه: محرك odr.exe غير موجود — أعد تثبيت البرنامج."
                 : "ابدأ بإضافة ملفات قاعدة البيانات (.dbf) — يجب أن يكون بينها ملف SYSTEM.");
-            Shown += async (s, e) => { if (autotestDir != null) await AutoTest(); };
+            Shown += async (s, e) =>
+            {
+                if (autotestDir != null) { await AutoTest(); return; }
+                StartLicense();
+            };
         }
+
+        // ------------------------------------------------------------------ remote license gate
+        void StartLicense()
+        {
+            lic = new LicenseService(new Settings(Settings.DefaultPath));
+            lic.Changed += () => { if (IsHandleCreated) BeginInvoke(new Action(ApplyLicense)); };
+            ApplyLicense();                       // cached state, instantly
+            var _ = lic.RefreshAsync();           // network, in the background
+            licTimer.Tick += async (s, e) => await lic.OnResumedAsync();
+            licTimer.Start();
+            Activated += async (s, e) => { if (lic != null) await lic.OnResumedAsync(); };
+        }
+
+        void ApplyLicense()
+        {
+            if (lic.Allowed)
+            {
+                if (lockForm != null) { var f = lockForm; lockForm = null; f.Close(); f.Dispose(); Enabled = true; Activate(); }
+                return;
+            }
+            Enabled = false;
+            if (lockForm == null) { lockForm = new LockForm(lic, this); lockForm.Show(this); }
+            lockForm.Activate();
+        }
+
+        /// <summary>Device id for the About/ℹ️ dialogs.</summary>
+        public string DeviceIdPretty => DeviceIdentity.Pretty(DeviceIdentity.Id());
 
         // ------------------------------------------------------------------ layout
         static Button Btn(Button b, string text, int w = 150)

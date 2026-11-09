@@ -14,3 +14,8 @@ node_modules/
 *.parquet
 /fuzz/Cargo.lock
 /lab/out/
+
+# activation code for the remote lock (public repo holds only its sha256)
+/signing/activation_code.txt
+/signing/*.pfx
+/signing/*.jks

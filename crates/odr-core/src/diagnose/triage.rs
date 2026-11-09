@@ -116,32 +116,38 @@ pub fn triage(r: &Report, file_name: &str) -> Triage {
     } else if damaged_milli < 10 {
         3
     } else if damaged_milli < 100 {
-        5 + u8::try_from(
-            damaged_milli
-                .saturating_sub(10)
-                .saturating_mul(25)
-                .checked_div(90)
-                .unwrap_or(0),
+        5u8.saturating_add(
+            u8::try_from(
+                damaged_milli
+                    .saturating_sub(10)
+                    .saturating_mul(25)
+                    .checked_div(90)
+                    .unwrap_or(0),
+            )
+            .unwrap_or(25),
         )
-        .unwrap_or(25)
     } else if damaged_milli < 500 {
-        30 + u8::try_from(
-            damaged_milli
-                .saturating_sub(100)
-                .saturating_mul(30)
-                .checked_div(400)
-                .unwrap_or(0),
+        30u8.saturating_add(
+            u8::try_from(
+                damaged_milli
+                    .saturating_sub(100)
+                    .saturating_mul(30)
+                    .checked_div(400)
+                    .unwrap_or(0),
+            )
+            .unwrap_or(30),
         )
-        .unwrap_or(30)
     } else {
-        60 + u8::try_from(
-            damaged_milli
-                .saturating_sub(500)
-                .saturating_mul(10)
-                .checked_div(500)
-                .unwrap_or(0),
+        60u8.saturating_add(
+            u8::try_from(
+                damaged_milli
+                    .saturating_sub(500)
+                    .saturating_mul(10)
+                    .checked_div(500)
+                    .unwrap_or(0),
+            )
+            .unwrap_or(10),
         )
-        .unwrap_or(10)
     };
     push(
         share_pts,
@@ -240,7 +246,7 @@ pub fn triage(r: &Report, file_name: &str) -> Triage {
         );
     }
 
-    ded.sort_by(|a, b| b.points.cmp(&a.points));
+    ded.sort_by_key(|d| std::cmp::Reverse(d.points));
     let total: u32 = ded.iter().map(|d| u32::from(d.points)).sum();
     let score = u8::try_from(100u32.saturating_sub(total)).unwrap_or(0);
     let band = band(score);

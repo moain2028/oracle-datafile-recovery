@@ -95,6 +95,7 @@ pub(crate) fn diagnose(
             report.layout.block_size
         );
     }
+    let report = report.with_triage(&file.display().to_string());
     let unchanged = report.sha256_scanned == sha_before;
     if json {
         let mut v = serde_json::to_value(&report)?;
@@ -223,6 +224,21 @@ fn print_text(file: &Path, r: &Report, sha_before: &str, unchanged: bool, lang: 
             if let Some(s) = c.highest_scn {
                 println!("  highest SCN {s}");
             }
+            if let Some(t) = &r.triage {
+                println!();
+                println!(
+                    "RECOVERABILITY  {}/100  [{:?}]  clean used blocks {}‰{}",
+                    t.score,
+                    t.band,
+                    t.clean_used_milli,
+                    t.live_rows
+                        .map_or(String::new(), |n| format!("  live rows {n}"))
+                );
+                println!("  {}", t.verdict_en);
+                for d in &t.deductions {
+                    println!("  -{:<3} {}", d.points, d.reason_en);
+                }
+            }
             println!();
             println!("findings ({})", r.findings.len());
             for f in &r.findings {
@@ -281,6 +297,18 @@ fn print_text(file: &Path, r: &Report, sha_before: &str, unchanged: bool, lang: 
                         "  (unattributed: {} damaged data-type blocks whose object id cannot be trusted)",
                         r.unattributed_damaged
                     );
+                }
+            }
+            if let Some(t) = &r.triage
+                && !t.next_steps.is_empty()
+            {
+                println!();
+                println!("next steps");
+                for (i, st) in t.next_steps.iter().enumerate() {
+                    println!("  {}. {}", i.saturating_add(1), st.purpose_en);
+                    if !st.command.is_empty() {
+                        println!("     $ {}", st.command);
+                    }
                 }
             }
             if list > 0 && !r.damaged_blocks.is_empty() {
@@ -348,6 +376,21 @@ fn print_text(file: &Path, r: &Report, sha_before: &str, unchanged: bool, lang: 
             );
             for (k, v) in &c.damaged {
                 println!("    {:<16}{v}", damage_ar(k));
+            }
+            if let Some(t) = &r.triage {
+                println!();
+                println!(
+                    "قابلية الاسترجاع  {}/100  [{}]  الكتل المستخدمة النظيفة {}‰{}",
+                    t.score,
+                    band_ar(t.band),
+                    t.clean_used_milli,
+                    t.live_rows
+                        .map_or(String::new(), |n| format!("  الصفوف الحيّة {n}"))
+                );
+                println!("  {}", t.verdict_ar);
+                for d in &t.deductions {
+                    println!("  -{:<3} {}", d.points, d.reason_ar);
+                }
             }
             println!();
             println!("النتائج ({})", r.findings.len());
@@ -431,6 +474,17 @@ fn permille(part: u64, whole: u64) -> String {
         "{}‰",
         part.saturating_mul(1000).checked_div(whole).unwrap_or(0)
     )
+}
+
+fn band_ar(b: odr_core::diagnose::Band) -> &'static str {
+    use odr_core::diagnose::Band;
+    match b {
+        Band::Excellent => "ممتاز",
+        Band::Good => "جيد",
+        Band::Partial => "جزئي",
+        Band::Poor => "ضعيف",
+        Band::Lost => "ضائع",
+    }
 }
 
 fn damage_ar(code: &str) -> &'static str {

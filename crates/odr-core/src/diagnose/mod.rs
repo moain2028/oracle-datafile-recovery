@@ -11,10 +11,12 @@
 
 pub mod layout;
 pub mod pattern;
+pub mod triage;
 pub mod verdict;
 
 pub use layout::{Layout, LayoutSource, ReadAt};
 pub use pattern::{Finding, FindingCode, Severity};
+pub use triage::{Band, Triage, triage};
 pub use verdict::{BlockKind, Damage, DbvClass, Depth, Verdict, entropy_milli, verdict};
 
 use crate::row::kdb::StructuralFault;
@@ -168,11 +170,22 @@ pub struct Report {
     pub logical_by_rule: BTreeMap<String, u64>,
     /// Interpreted findings, most severe first.
     pub findings: Vec<Finding>,
+    /// Recoverability score, verdict and next steps. Filled by
+    /// [`Report::with_triage`]; `None` straight out of [`run`].
+    pub triage: Option<Triage>,
     /// Options used.
     pub options: Options,
 }
 
 impl Report {
+    /// Attach the triage summary (score, verdict, next steps). `file_name`
+    /// appears in the suggested commands.
+    #[must_use]
+    pub fn with_triage(mut self, file_name: &str) -> Self {
+        self.triage = Some(triage::triage(&self, file_name));
+        self
+    }
+
     /// Whether any block is damaged or any finding is above `Info`.
     pub fn has_damage(&self) -> bool {
         self.counters.damaged_total() > 0
@@ -371,6 +384,7 @@ pub fn run<R: ReadAt + ?Sized>(
         unattributed_damaged: st.unattributed,
         logical_by_rule: st.logical_by_rule,
         findings: Vec::new(),
+        triage: None,
         options: opts,
     };
     report.findings = pattern::findings(&report);

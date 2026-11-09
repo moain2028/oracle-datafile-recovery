@@ -1,4 +1,18 @@
 # Changelog
+
+## [Unreleased] — `odr diagnose`
+### Added
+- **`odr diagnose FILE [--json] [--lang en|ar] [--fast] [--list N]`** — corruption detection and explanation engine (`docs/design/diagnose.md`, REQ-001.2/.3/.5):
+  - per-block verdict: kind (Data/Index/Lob/Empty/Space/Undo/…) × damage (truncated, zeroed, header_zeroed, encrypted, garbage, marked_corrupt, checksum_fail, torn, misplaced, logical) — `dbv` classes **match exactly on all 4 golden 26ai files** (LV-078);
+  - layout from three witnesses: `kcvfh` → OS block 0 magic (LV-076) → `kcbh` signature inference (self-addressed `rdba` vote; refuses non-Oracle bytes) — a file with blocks 0 and 1 destroyed is still scanned with the right size/order;
+  - streaming (4 MiB chunks, `O(regions)` memory), SHA-256 "after" computed from the scanned bytes (one pass fewer than `scan`);
+  - damage regions, per-`DATA_OBJECT_ID` summary with live-row counts, and **findings** with code, severity, confidence, evidence, cause/recovery (EN+AR) and the ORA- errors Oracle would raise: HEADER_DESTROYED, TRUNCATED, RANSOMWARE_HEAD, RANSOMWARE_PERIODIC, ENCRYPTED_SCATTERED, ZEROED_REGIONS, BIT_ROT, TORN_WRITES, MISDIRECTED_WRITES, LOGICAL_CORRUPTION, MARKED_CORRUPT, GARBAGE_OVERWRITE, SIZE_MISMATCH, HEALTHY.
+- Measured on `odr-corrupt` (10 patterns × 3 seeds, 26ai assm01): **recall 100 % / precision 100 %** on bitrot (minus 2 checksum collisions, LV-079), torn, zero, swap, ransom-head, ransom-periodic, wipe-header, holes; truncate reports the exact missing block count; forge (checksum recomputed) is caught only by the logical check (3/59, 2/59, 1/59 — declared limit, same as LV-064/071). Each pattern yields its expected top finding.
+- `StructuralFault` now derives `Hash`/`Deserialize`; tests `diagnose_synthetic.rs` (6).
+### Known limits
+- Throughput ~80 MB/s on the sandbox (SHA-256 bound, no SHA-NI); REQ-001.6 (≥ 300 MB/s) still open. Logical depth adds `DataBlock::parse` per data block.
+- Entropy threshold calibrated on 26ai only; `seq=0xFF` marked-corrupt not yet reproduced in the lab.
+
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 
 

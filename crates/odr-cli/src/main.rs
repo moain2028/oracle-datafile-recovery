@@ -3,6 +3,7 @@
 //! Output contract: human text by default, `--json` for machine output.
 //! Exit codes: 0 ok · 1 usage/IO error · 2 completed with damaged blocks.
 
+mod diagnose_cmd;
 mod dict_cmd;
 mod scavenge_cmd;
 
@@ -28,8 +29,48 @@ enum Endian {
     Big,
 }
 
+#[derive(Clone, Copy, ValueEnum)]
+enum LangArg {
+    En,
+    Ar,
+}
+
 #[derive(Subcommand)]
 enum Cmd {
+    /// Detect, classify and explain damage in a datafile (read-only):
+    /// every block judged (data/index/LOB/empty…, zeroed/encrypted/torn/
+    /// checksum/misplaced/logical), damage regions, per-object summary and
+    /// interpreted findings with cause, recoverability and Oracle errors.
+    /// Block size and byte order come from the header, the OS block, or
+    /// are inferred from block signatures when both are destroyed.
+    Diagnose {
+        /// Path to the datafile.
+        file: PathBuf,
+        /// Block size (only honoured with `--force`; otherwise it must agree
+        /// with the file).
+        #[arg(long)]
+        block_size: Option<usize>,
+        /// Byte order (with `--force`).
+        #[arg(long, value_enum)]
+        endian: Option<Endian>,
+        /// Use `--block-size`/`--endian` even when the file disagrees or
+        /// cannot be read. Recorded in the output.
+        #[arg(long)]
+        force: bool,
+        /// Physical checks only (skip the per-block structural check and
+        /// row counting). Faster; misses logical corruption.
+        #[arg(long)]
+        fast: bool,
+        /// Emit JSON instead of text.
+        #[arg(long)]
+        json: bool,
+        /// Report language for text output.
+        #[arg(long, value_enum, default_value = "en")]
+        lang: LangArg,
+        /// List up to N damaged blocks individually.
+        #[arg(long, default_value_t = 0)]
+        list: usize,
+    },
     /// Classify every block of a datafile (read-only) and print a summary.
     Scan {
         /// Path to the datafile.
@@ -115,8 +156,29 @@ fn main() -> ExitCode {
     }
 }
 
+#[allow(clippy::too_many_lines)] // one dispatch per subcommand
 fn run() -> Result<ExitCode> {
     let (file, block_size_arg, endian_arg, force, json) = match Cli::parse().cmd {
+        Cmd::Diagnose {
+            file,
+            block_size,
+            endian,
+            force,
+            fast,
+            json,
+            lang,
+            list,
+        } => {
+            let order = endian.map(|e| match e {
+                Endian::Little => ByteOrder::Little,
+                Endian::Big => ByteOrder::Big,
+            });
+            let lang = match lang {
+                LangArg::En => diagnose_cmd::Lang::En,
+                LangArg::Ar => diagnose_cmd::Lang::Ar,
+            };
+            return diagnose_cmd::diagnose(&file, block_size, order, force, fast, json, lang, list);
+        }
         Cmd::Scan {
             file,
             block_size,

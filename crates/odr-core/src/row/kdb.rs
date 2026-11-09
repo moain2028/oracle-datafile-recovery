@@ -104,7 +104,7 @@ pub enum Layout {
 /// A structural invariant violated by a block that passed its checksum
 /// (see [`DataBlock::structural_check`], LV-062). Every variant names the
 /// evidence so a forensic report can cite it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[non_exhaustive]
 pub enum StructuralFault {
     /// The block's own `rdba` does not match where it was read from: a

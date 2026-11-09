@@ -2,6 +2,9 @@
 
 ## [Unreleased] — `odr diagnose`
 
+### Added — Windows app: remote lock (kill switch)
+- `app/windows/Remote/*`: reads `moain2028/odr-apps/odr/license.json` (public repo, switch only); lock / unlock / code / per-device block / offline grace / revoke; **never a false lock** offline. RTL lock screen with device id + WhatsApp. `ODR.exe --selftest-license` (27 checks, no network) runs in CI. `tools/odr_control.py` operates the switch; code hash only is public. CI publishes the installer + `update.json` to `odr-apps` on tags. See `docs/design/remote-lock.md`.
+
 ### Added (agent-panel consensus, `docs/research/06_agent_panel_synthesis_ar.md` §1)
 - Verdicts: `payload_scrambled` (header-preserving ransomware; LV-081), `stale_scn` and `duplicate_rdba` (post-pass per object, LV-082/083); `Encrypted` now carries χ² and serial correlation (LV-080).
 - Counters: `checksum_flagged` + `checksum_coverage_milli()`; `Report.consistency_pass`, `Report.tail_excerpt`.

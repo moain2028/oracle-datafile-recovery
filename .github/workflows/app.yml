@@ -35,6 +35,11 @@ jobs:
         run: cargo build --release --locked -p odr-cli -p odr-corrupt
       - name: Build the app (ODR.exe, .NET Framework 4.8 - built into Windows 10/11)
         run: dotnet build app/windows/ODR.csproj -c Release -nologo
+      - name: Remote-lock state table self-test (no network)
+        shell: pwsh
+        run: |
+          & app/windows/bin/Release/net48/ODR.exe --selftest-license | Write-Host
+          if ($LASTEXITCODE -ne 0) { throw "license self-test failed" }
       - name: Sign executables
         shell: pwsh
         run: ./app/windows/sign.ps1 target/release/odr.exe target/release/odr-corrupt.exe app/windows/bin/Release/net48/ODR.exe
@@ -111,3 +116,32 @@ jobs:
         run: |
           for ($k = 0; $k -lt 40; $k++) { gh release view $env:GITHUB_REF_NAME -R "${{ github.repository }}" *> $null; if ($LASTEXITCODE -eq 0) { break }; Start-Sleep 30 }
           gh release upload $env:GITHUB_REF_NAME (Get-ChildItem app/windows/installer/Output/ODR-Setup-*).FullName -R "${{ github.repository }}" --clobber
+      - name: Publish the Setup to the PUBLIC download repo (moain2028/odr-apps) + update.json
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          APPS_TOKEN: ${{ secrets.ODR_APPS_TOKEN }}
+        run: |
+          # Needs repo secret ODR_APPS_TOKEN: a fine-grained PAT with Contents: write on moain2028/odr-apps ONLY.
+          if (-not $env:APPS_TOKEN) { Write-Host "ODR_APPS_TOKEN not set - skipping public publish"; exit 0 }
+          $env:GH_TOKEN = $env:APPS_TOKEN
+          $ver = $env:ODR_APP_VERSION
+          $setup = (Get-ChildItem app/windows/installer/Output/ODR-Setup-*.exe).FullName
+          $sha = (Get-FileHash $setup -Algorithm SHA256).Hash.ToLower()
+          $size = (Get-Item $setup).Length
+          # stable name for the "latest" link + versioned name
+          Copy-Item $setup "ODR-Setup.exe"
+          gh release view $env:GITHUB_REF_NAME -R moain2028/odr-apps *> $null
+          if ($LASTEXITCODE -ne 0) { gh release create $env:GITHUB_REF_NAME -R moain2028/odr-apps --title "ODR $ver" --notes "ODR $ver — Windows 10/11 x64. SHA-256: $sha" }
+          gh release upload $env:GITHUB_REF_NAME $setup "$setup.sha256" "ODR-Setup.exe" -R moain2028/odr-apps --clobber
+          # update.json for in-app update checks
+          $build = [int](($ver -split '\.')[0]) * 100 + [int](($ver -split '\.')[1]) * 10 + [int]((($ver -split '\.')[2] -split '-')[0])
+          $json = @{ schema = 1; product = "odr"; version = $ver; build = $build; minSupportedBuild = 0;
+                     url = "https://github.com/moain2028/odr-apps/releases/latest/download/ODR-Setup.exe";
+                     sha256 = $sha; size = $size; notes = ""; updatedAt = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ") } | ConvertTo-Json
+          $b64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($json + "`n"))
+          $cur = gh api repos/moain2028/odr-apps/contents/odr/update.json 2>$null | ConvertFrom-Json
+          $body = @{ message = "odr: update.json $ver"; content = $b64 }
+          if ($cur.sha) { $body.sha = $cur.sha }
+          $body | ConvertTo-Json | gh api -X PUT repos/moain2028/odr-apps/contents/odr/update.json --input - | Out-Null
+          Write-Host "published $ver to odr-apps (sha256 $sha)"

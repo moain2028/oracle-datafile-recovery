@@ -11,7 +11,7 @@ Download `odr-<ver>-x86_64-pc-windows-msvc.zip` or the Linux tarball from **Rele
 
 
 ## Windows app (0.7.0) — download, structure, remote lock
-**Download (public):** https://github.com/moain2028/odr-apps/releases/latest/download/ODR-Setup.exe — signed, no admin rights, Arabic RTL. Six pages in a sidebar, each with an ℹ️ that explains it: الرئيسية · الاسترجاع · **التشخيص** · **الفرز** · **البصمة** · الإعدادات. Source `app/windows/` (`docs/design/windows-app.md`). CI installs it on a real Windows runner and runs `--autotest` (18 checks) + `--selftest-license` (28) before publishing.
+**Customer download page (permanent):** https://4c963f49-7f97-497d-ae4a-0ba8a209171a.vip.gensparksite.com — source `odr-apps/gateway/`. Direct Release: https://github.com/moain2028/odr-apps/releases/latest/download/ODR-Setup.exe — signed, no admin rights, Arabic RTL. Six pages in a sidebar, each with an ℹ️ that explains it: الرئيسية · الاسترجاع · **التشخيص** · **الفرز** · **البصمة** · الإعدادات. Source `app/windows/` (`docs/design/windows-app.md`). CI installs it on a real Windows runner and runs `--autotest` (18 checks) + `--selftest-license` (28) before publishing.
 
 **Remote lock:** the public repo `moain2028/odr-apps` holds only `odr/license.json` (`"active": true|false` + `"code"`) and `odr/update.json`. `active:false` locks every installed copy within ≤ 10 min and shows the activation-code screen; first run never asks for a code; offline keeps the last known state (`docs/design/remote-lock.md`, `tools/odr_control.py`).
 

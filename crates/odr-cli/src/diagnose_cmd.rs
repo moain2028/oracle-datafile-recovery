@@ -53,6 +53,7 @@ pub(crate) fn diagnose(
     lang: Lang,
     list: usize,
     html: Option<&Path>,
+    db3f: Option<&Path>,
 ) -> Result<ExitCode> {
     if let Some(bs) = block_size
         && !odr_core::block::BLOCK_SIZES.contains(&bs)
@@ -98,6 +99,27 @@ pub(crate) fn diagnose(
     }
     let report = report.with_triage(&file.display().to_string());
     let unchanged = report.sha256_scanned == sha_before;
+    if let Some(out) = db3f {
+        let f =
+            std::fs::File::create(out).with_context(|| format!("creating {}", out.display()))?;
+        let mut w = std::io::BufWriter::new(f);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        odr_core::diagnose::db3f::write_header(
+            &mut w,
+            &report,
+            &file.display().to_string(),
+            &sha_before,
+            &format!("unix:{now}"),
+        )?;
+        let pages = odr_core::diagnose::db3f::write_pages(&mut rd, &report, &mut w)?;
+        std::io::Write::flush(&mut w)?;
+        if !json {
+            eprintln!("db3f written to {} ({pages} pages)", out.display());
+        }
+    }
     if let Some(out) = html {
         let l = match lang {
             Lang::En => odr_core::diagnose::html::Lang::En,

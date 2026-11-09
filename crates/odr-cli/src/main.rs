@@ -74,6 +74,10 @@ enum Cmd {
         /// as `--lang`) to this path.
         #[arg(long)]
         html: Option<PathBuf>,
+        /// Also write a DB3F file (Database Forensic File Format, DFRWS
+        /// 2019: one JSON header line, then one JSON object per block).
+        #[arg(long)]
+        db3f: Option<PathBuf>,
     },
     /// Classify every block of a datafile (read-only) and print a summary.
     Scan {
@@ -173,6 +177,7 @@ fn run() -> Result<ExitCode> {
             lang,
             list,
             html,
+            db3f,
         } => {
             let order = endian.map(|e| match e {
                 Endian::Little => ByteOrder::Little,
@@ -192,6 +197,7 @@ fn run() -> Result<ExitCode> {
                 lang,
                 list,
                 html.as_deref(),
+                db3f.as_deref(),
             );
         }
         Cmd::Scan {

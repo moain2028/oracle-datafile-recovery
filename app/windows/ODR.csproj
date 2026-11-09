@@ -10,7 +10,7 @@
     <Nullable>disable</Nullable>
     <ApplicationIcon>odr.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>
-    <Version>0.6.1</Version>
+    <Version>0.7.0</Version>
     <Company>moain2028</Company>
     <Product>ODR - Oracle Datafile Recovery</Product>
     <Description>ODR - Oracle Datafile Recovery</Description>

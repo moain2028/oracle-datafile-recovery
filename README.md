@@ -10,8 +10,18 @@ Enterprise-grade, DUL-class tool for extracting data from corrupted / unopenable
 Download `odr-<ver>-x86_64-pc-windows-msvc.zip` or the Linux tarball from **Releases**, plus a golden set (`golden-26ai-20261018`, `golden-21c-20261021`). Then follow **`docs/field/TRIAL_KIT_ar.md`** (Arabic): scan → dict → extract, make deterministic damage with `odr-corrupt`, and compare the three layers against the clean extraction.
 
 
-## Windows app (0.6.0)
-For evaluators: download **`ODR-Setup-0.6.0.exe`** from the `v0.6.0-alpha` Release, run it (no admin rights), open «ODR - استرجاع بيانات أوراكل» from the Start menu: add .dbf files → read tables → extract. Arabic UI, signed. Source: `app/windows/`; CI proof on real Windows: `docs/app/proof-2026-11-03/`.
+## Windows app (0.7.0) — download, structure, remote lock
+**Download (public):** https://github.com/moain2028/odr-apps/releases/latest/download/ODR-Setup.exe — signed, no admin rights, Arabic RTL. Six pages in a sidebar, each with an ℹ️ that explains it: الرئيسية · الاسترجاع · **التشخيص** · **الفرز** · **البصمة** · الإعدادات. Source `app/windows/` (`docs/design/windows-app.md`). CI installs it on a real Windows runner and runs `--autotest` (18 checks) + `--selftest-license` (28) before publishing.
+
+**Remote lock:** the public repo `moain2028/odr-apps` holds only `odr/license.json` (`"active": true|false` + `"code"`) and `odr/update.json`. `active:false` locks every installed copy within ≤ 10 min and shows the activation-code screen; first run never asks for a code; offline keeps the last known state (`docs/design/remote-lock.md`, `tools/odr_control.py`).
+
+## `odr diagnose` — what happened to this file?
+```
+odr diagnose FILE.dbf [--lang ar] [--html report.html] [--db3f file.db3f] [--json] [--fast]
+odr triage DIR…  [--json]            # many files, worst first
+odr fingerprint learn DICT.json --out BOOK   ·   odr fingerprint match report.json --book BOOK
+```
+Every block is judged (kind × damage: zeroed / encrypted / **payload_scrambled** / torn / checksum / misplaced / logical / **stale_scn** / **duplicate_rdba** …), regions and per-object summary are built in one streaming pass with SHA-256 of the scanned bytes, and findings explain **cause · evidence · recovery · ORA errors** in Arabic and English with a 0–100 recoverability score and expected loss. Design: `docs/design/diagnose.md`; facts LV-075..084; seven field use cases: `docs/field/USE_CASES_ar.md`.
 
 ## Repository layout
 

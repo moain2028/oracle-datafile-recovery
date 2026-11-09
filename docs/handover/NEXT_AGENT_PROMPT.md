@@ -14,6 +14,7 @@ by a documented rule and labelled with the rule), or `rejected` (with a reason).
 never default to NULL, never trust a published source over the real file.
 
 ## Read in this order (≈ 25 minutes) — do not skip
+000. `docs/handover/2026-11-09_session_handover.md` — **the latest state (2026-11-09): `odr diagnose` engine (LV-075..084), remote lock via public repo `moain2028/odr-apps`, Windows app v0.7 restructured (sidebar, ℹ️ per page, Diagnose/Triage/Fingerprint/Settings). Tag `v0.7.0-alpha`. §2 = how to work from a new machine in 20 min. Start here.** Work branch is now `genspark_ai_developer` → PR → main (Lead merges, squash).
 00. `docs/handover/2026-11-03_session_handover.md` — **the latest state (2026-11-03)**: repo on `moain2028/oracle-datafile-recovery` with full original history; golden sets rebuilt for 26ai/21c/11g (Releases `golden-{26ai,21c,11g}-20261103`); CI job `golden` runs them on every PR; v0.4.0-alpha offline evaluator bundle (`START_HERE.bat`) tested on a real Windows runner by `trial.yml`. **Start here.** The golden download commands below that name `moain2026` and the 2026-10 tags are history — use the 2026-11-03 Releases.
 0. `docs/handover/2026-10-24_session_handover.md` — **the latest state (2026-10-24): PRs #33–#37 merged;
    step g closed (LV-067); LOB inline + out-of-line done (LV-068/070); compression refused (LV-069);

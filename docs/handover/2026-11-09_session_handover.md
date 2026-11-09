@@ -9,7 +9,8 @@
 | What | Where | Proof |
 |---|---|---|
 | Repo (private, everything) | `moain2028/oracle-datafile-recovery`, `main` = `0d96c8c`, branch `genspark_ai_developer` = main | PRs #11–#16 merged (squash) |
-| Public download + remote switch | `moain2028/odr-apps`: `odr/license.json`, `odr/update.json`, Releases | https://github.com/moain2028/odr-apps/releases/latest |
+| Public download + remote switch | `moain2028/odr-apps`: `odr/license.json`, `odr/update.json`, Releases, `gateway/` | https://github.com/moain2028/odr-apps/releases/latest |
+| **Customer download page (permanent)** | Cloudflare Worker on Genspark hosted (`gsk hosted`), source `odr-apps/gateway/` | https://4c963f49-7f97-497d-ae4a-0ba8a209171a.vip.gensparksite.com (`/download` streams the latest installer; verified sha256 match) |
 | Installer | `ODR-Setup-0.7.0.exe` (35.6 MB) sha256 `59eba79b3c242b27ec515ed3f46f92aec04cdda52bea47c431e73e16d0e9fd04` | built, signed, installed, autotested, uninstalled on a real Windows runner (`app.yml` run 42582932029) |
 | Engine gates | `cargo fmt/clippy -D warnings/doc/test --workspace` | green at `0d96c8c` |
 | App self-tests | `ODR.exe --selftest-license` 28/28 · `--autotest` 18/18 | in the CI log + `odr-app-proof` artifact (screenshots of all pages) |
@@ -41,11 +42,15 @@ Design: `docs/design/remote-lock.md`. **Owner's words: "I can lock and unlock re
 ### 1.3 Windows app v0.7 — restructured (PR #16)
 Design: `docs/design/windows-app.md`. Shell `MainForm.cs` (navy sidebar, gold, RTL), pages in `app/windows/Ui/`: `HomePage` (4 doors + drag-drop), `RecoverPage` (the old window, logic unchanged), `DiagnosePage` (gauge, verdict, finding cards, regions, next steps, HTML/DB3F/JSON), `TriagePage`, `FingerprintPage`, `SettingsPage`; `Theme.cs`, `Help.cs` (**ℹ️ texts for every page**), `DiagnoseModel.cs`. `--autotest` 14 → 18 checks (+ diagnose on a healthy demo file = 100/100, HEALTHY).
 
+### 1.4 Public download page (customer-facing, no GitHub visible)
+`odr-apps/gateway/` = Cloudflare Worker (`wrangler.jsonc`, `src/index.js`, `public/index.html`): `/` Arabic landing page (version/size pulled from `odr/update.json`), `/download` proxies `ODR-Setup.exe` from the latest `odr-apps` Release through the same domain, `/sha256`, `/version`. Deployed with Genspark hosted (`gsk hosted deploy` → `action_approve` → `action_wait` → `worker_get`). Lessons: the deploy root must be small and **contain no symlink** (the 6.8 GB engine checkout was moved to `/home/user/odr-repo`). Runbook in `odr-apps/gateway/README.md`. Permanent URL: https://4c963f49-7f97-497d-ae4a-0ba8a209171a.vip.gensparksite.com
+
 ## 2. How to work on this from a new machine (≈ 20 min)
 
 ```bash
 # 1. clone (token with repo + workflow; the owner issues it — never paste it in chat)
-cd /home/user/webapp && git clone https://<TOKEN>@github.com/moain2028/oracle-datafile-recovery.git odr && cd odr
+# NOTE: /home/user/webapp is the deploy root of the download gateway — clone the engine OUTSIDE it
+cd /home/user && git clone https://<TOKEN>@github.com/moain2028/oracle-datafile-recovery.git odr-repo && cd odr-repo
 git checkout genspark_ai_developer   # work branch; PRs go to main; the Lead merges (squash)
 
 # 2. Rust toolchain + gates (runbook §1)
